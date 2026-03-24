@@ -1,0 +1,34 @@
+services:
+  server:
+    build: ./server
+    container_name: rcssserver
+    network_mode: host
+    command: ./rcssserver server::port=6000
+
+  team_left:
+    build:
+      context: ..
+      dockerfile: docker/agents/Dockerfile
+    container_name: team_left
+    network_mode: host
+    environment:
+      - SERVER_IP=127.0.0.1
+      - SERVER_PORT=6000
+      - TEAM=left
+      - NUM_AGENTS=11
+    depends_on:
+      - server
+
+  team_right:
+    build:
+      context: ..
+      dockerfile: docker/agents/Dockerfile
+    container_name: team_right
+    network_mode: host
+    environment:
+      - SERVER_IP=127.0.0.1
+      - SERVER_PORT=6000
+      - TEAM=right
+      - NUM_AGENTS=11
+    depends_on:
+      - server
