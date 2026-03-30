@@ -9,4 +9,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ /app/src/
 COPY config/ /app/config/
 
+ENV PYTHONPATH=/app/src
+
 CMD ["python", "src/main.py"]

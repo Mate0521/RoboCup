@@ -1,34 +1,56 @@
 services:
+
   server:
     build: ./server
     container_name: rcssserver
-    network_mode: host
-    command: ./rcssserver server::port=6000
+    networks:
+      - robocup_net
+    command: ./rcssserver server::port=6000 coach::enable=true coach::online_coach_port=6002
 
   team_left:
     build:
       context: ..
       dockerfile: docker/agents/Dockerfile
     container_name: team_left
-    network_mode: host
     environment:
-      - SERVER_IP=127.0.0.1
+      - SERVER_IP=rcssserver
       - SERVER_PORT=6000
       - TEAM=left
       - NUM_AGENTS=11
     depends_on:
       - server
+    networks:
+      - robocup_net
 
   team_right:
     build:
       context: ..
       dockerfile: docker/agents/Dockerfile
     container_name: team_right
-    network_mode: host
     environment:
-      - SERVER_IP=127.0.0.1
+      - SERVER_IP=rcssserver
       - SERVER_PORT=6000
       - TEAM=right
       - NUM_AGENTS=11
     depends_on:
       - server
+    networks:
+      - robocup_net
+  monitor:
+      build: ./server
+      container_name: rcssmonitor
+      depends_on:
+        - server
+      networks:
+        - robocup_net
+      environment:
+        - DISPLAY=${DISPLAY}
+        - QT_X11_NO_MITSHM=1
+      volumes:
+        - /tmp/.X11-unix:/tmp/.X11-unix
+      command: /app/rcssmonitor/build/rcssmonitor --server-host=server --server-port=6001
+
+
+networks:
+  robocup_net:
+    driver: bridge
