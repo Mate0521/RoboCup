@@ -1,57 +1,58 @@
 """
-Capa de decisión de alto nivel.
-Coordina percepción, FSM y actuadores.
+Capa de decisión — coordina percepción, FSM y posicionamiento inicial.
 """
-from modules.perception import Perception
+import logging
+from modules.perception import Perception, PlayMode
 from modules.fsm import FSM
 from modules.role_assignment import get_role, get_start_position
 from modules import actuators
-import logging
 
 logger = logging.getLogger(__name__)
 
 
 class DecisionMaker:
-    """
-    Orquesta la toma de decisiones del agente cada ciclo.
-    """
-
     def __init__(self, perception: Perception):
-        self.perception = perception
-        self.fsm = None
+        self.perception  = perception
+        self.fsm: FSM | None = None
         self._positioned = False
+        self._prev_pm    = None
 
     def _ensure_fsm(self):
         if self.fsm is None:
-            role = get_role(self.perception.state.unum)
+            role     = get_role(self.perception.state.unum)
             self.fsm = FSM(self.perception, role)
-            logger.info(f"Agente {self.perception.state.unum} — rol: {role}")
+            logger.info(f"[Agente {self.perception.state.unum}] rol: {role}")
 
     def decide(self) -> str | None:
-        """
-        Retorna el comando a ejecutar en este ciclo.
-        Retorna None si no hay acción.
-        """
         state = self.perception.state
-        play_mode = state.play_mode
+        pm    = state.play_mode
 
         self._ensure_fsm()
 
-        # Posicionarse al inicio o después de un gol
-        if play_mode in ("before_kick_off", "kick_off_l", "kick_off_r"):
+        # Detectar cambio de play mode para loggear
+        if pm != self._prev_pm:
+            logger.info(f"[Agente {state.unum}] play_mode → {pm.value}")
+            self._prev_pm = pm
+
+        # Posicionarse al inicio del juego o tras un gol
+        reset_modes = (
+            PlayMode.BEFORE_KICK_OFF,
+            PlayMode.KICK_OFF_L,
+            PlayMode.KICK_OFF_R,
+            PlayMode.GOAL_L,
+            PlayMode.GOAL_R,
+        )
+
+        if pm in reset_modes:
             if not self._positioned and state.unum > 0:
                 self._positioned = True
                 x, y = get_start_position(state.unum, state.side)
                 cmd = actuators.move(x, y)
-                logger.info(f"Posicionando en ({x}, {y})")
+                logger.info(f"[Agente {state.unum}] → posición inicial ({x}, {y})")
                 return cmd
 
-        # Resetear posicionamiento para próximos kick_offs
-        if play_mode == "play_on":
+        # Resetear flag de posicionamiento cuando empieza el juego
+        if pm == PlayMode.PLAY_ON:
             self._positioned = False
 
-        # Delegar a la FSM
-        cmd = self.fsm.step()
-        if cmd:
-            logger.debug(f"FSM → {cmd}")
-        return cmd
+        return self.fsm.step()

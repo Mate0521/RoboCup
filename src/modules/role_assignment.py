@@ -1,8 +1,9 @@
 """
-Asignación de roles según el número de jugador (unum).
-Fácil de extender con roles más complejos.
+Asignación de roles — formación 4-3-3.
+Cada rol tiene posición táctica dinámica según el play mode.
 """
 
+# Formación 4-3-3
 ROLES = {
     1:  "goalkeeper",
     2:  "defender",
@@ -17,43 +18,87 @@ ROLES = {
     11: "forward",
 }
 
-# Posición inicial por rol (x, y) para side izquierdo
-# Para side derecho se niegan las x
-STARTING_POSITIONS = {
-    "goalkeeper": (-48, 0),
-    "defender":   (-30, 0),
-    "midfielder": (-10, 0),
-    "forward":    (10,  0),
+# Posiciones base para side izquierdo (x, y)
+# x negativo = mitad propia, x positivo = mitad rival
+BASE_POSITIONS = {
+    "goalkeeper": [(-48, 0)],
+    "defender":   [(-30, -15), (-33, -5), (-33, 5), (-30, 15)],
+    "midfielder": [(-10, -12), (-5, 0), (-10, 12)],
+    "forward":    [(20, -10), (25, 0), (20, 10)],
 }
 
-# Offsets para distribuir jugadores del mismo rol
-ROLE_OFFSETS = {
-    "defender":   [(0, -15), (0, 0), (0, 15), (0, -8)],
-    "midfielder": [(0, -10), (0, 0), (0, 10)],
-    "forward":    [(0, -8),  (0, 8)],
+# Posiciones defensivas (cuando el rival tiene el balón)
+DEFENSIVE_POSITIONS = {
+    "goalkeeper": [(-48, 0)],
+    "defender":   [(-38, -12), (-40, -4), (-40, 4), (-38, 12)],
+    "midfielder": [(-25, -10), (-22, 0), (-25, 10)],
+    "forward":    [(-5, -8), (0, 0), (-5, 8)],
+}
+
+# Posiciones ofensivas (cuando mi equipo tiene el balón)
+OFFENSIVE_POSITIONS = {
+    "goalkeeper": [(-48, 0)],
+    "defender":   [(-20, -15), (-22, -5), (-22, 5), (-20, 15)],
+    "midfielder": [(5, -12), (10, 0), (5, 12)],
+    "forward":    [(35, -10), (38, 0), (35, 10)],
+}
+
+# Posiciones para tiros libres/corners (mi equipo ejecuta)
+SET_PIECE_ATTACK = {
+    "goalkeeper": [(-48, 0)],
+    "defender":   [(-15, -10), (-10, -5), (-10, 5), (-15, 10)],
+    "midfielder": [(10, -8), (15, 0), (10, 8)],
+    "forward":    [(38, -8), (40, 0), (38, 8)],
+}
+
+# Posiciones para tiros libres/corners (el rival ejecuta)
+SET_PIECE_DEFENSE = {
+    "goalkeeper": [(-48, 0)],
+    "defender":   [(-42, -10), (-43, -3), (-43, 3), (-42, 10)],
+    "midfielder": [(-30, -8), (-28, 0), (-30, 8)],
+    "forward":    [(-10, -5), (-5, 0), (-10, 5)],
 }
 
 
 def get_role(unum: int) -> str:
-    return ROLES.get(unum, "field")
+    return ROLES.get(unum, "midfielder")
 
 
-def get_start_position(unum: int, side: str) -> tuple[float, float]:
-    """Retorna la posición de inicio para el jugador."""
+def _get_role_index(unum: int) -> int:
     role = get_role(unum)
-    base_x, base_y = STARTING_POSITIONS.get(role, (0, 0))
+    same = [u for u, r in ROLES.items() if r == role]
+    return same.index(unum) if unum in same else 0
 
-    # Calcular offset dentro del mismo rol
-    same_role = [u for u, r in ROLES.items() if r == role]
-    idx = same_role.index(unum) if unum in same_role else 0
-    offsets = ROLE_OFFSETS.get(role, [(0, 0)])
-    off_x, off_y = offsets[idx % len(offsets)]
 
-    x = base_x + off_x
-    y = base_y + off_y
+def get_tactical_position(unum: int, side: str, situation: str = "base") -> tuple[float, float]:
+    """
+    Retorna la posición táctica según la situación:
+      base       — posición estándar
+      defensive  — cuando el rival tiene el balón
+      offensive  — cuando mi equipo tiene el balón
+      set_attack — tiro libre/corner a favor
+      set_defense— tiro libre/corner en contra
+    """
+    role = get_role(unum)
+    idx  = _get_role_index(unum)
 
-    # Espejo para el equipo derecho
+    tables = {
+        "base":       BASE_POSITIONS,
+        "defensive":  DEFENSIVE_POSITIONS,
+        "offensive":  OFFENSIVE_POSITIONS,
+        "set_attack": SET_PIECE_ATTACK,
+        "set_defense":SET_PIECE_DEFENSE,
+    }
+    table = tables.get(situation, BASE_POSITIONS)
+    positions = table.get(role, [(0, 0)])
+    x, y = positions[idx % len(positions)]
+
+    # Espejo para side derecho
     if side == "r":
         x = -x
 
-    return (x, y)
+    return (float(x), float(y))
+
+
+def get_start_position(unum: int, side: str) -> tuple[float, float]:
+    return get_tactical_position(unum, side, "base")

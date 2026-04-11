@@ -5,7 +5,7 @@ services:
     container_name: rcssserver
     networks:
       - robocup_net
-    command: ./rcssserver server::port=6000 coach::enable=true coach::online_coach_port=6002
+    command: ./rcssserver server::port=6000 server::auto_mode=true
 
   team_left:
     build:
@@ -37,19 +37,14 @@ services:
     networks:
       - robocup_net
   monitor:
-      build: ./server
-      container_name: rcssmonitor
-      depends_on:
-        - server
-      networks:
-        - robocup_net
-      environment:
-        - DISPLAY=${DISPLAY}
-        - QT_X11_NO_MITSHM=1
-      volumes:
-        - /tmp/.X11-unix:/tmp/.X11-unix
-      command: /app/rcssmonitor/build/rcssmonitor --server-host=server --server-port=6001
-
+    build: ./monitor
+    container_name: rcssmonitor
+    ports:
+      - "5900:5900"
+    networks:
+      - robocup_net
+    depends_on:
+      - server
 
 networks:
   robocup_net:

@@ -1,6 +1,7 @@
 """
-Agent — orquesta el ciclo de vida de un agente individual.
-Conecta, inicializa, y corre el loop de percepción-decisión-acción.
+Agent — ciclo de vida de un agente individual.
+Fix principal: el loop ahora procesa TODOS los mensajes pendientes
+antes de decidir, evitando que el agente se quede quieto.
 """
 import logging
 import time
@@ -23,66 +24,55 @@ class Agent:
         self.client = RCSSClient(host, port)
         self.perception = Perception()
         self.decision = DecisionMaker(self.perception)
-
         self._running = False
 
     def connect(self) -> bool:
-        """Inicializa la conexión con el servidor. Retorna True si exitoso."""
         logger.info(f"[Agente {self.unum}] Conectando a {self.host}:{self.port}...")
         response = self.client.init(self.team_name)
-
         if not response:
             logger.error(f"[Agente {self.unum}] Sin respuesta del servidor.")
             return False
 
         parsed = parse(response)
-
         if parsed["type"] == "error":
-            logger.error(f"[Agente {self.unum}] Error del servidor: {parsed['data']}")
+            logger.error(f"[Agente {self.unum}] Error: {parsed['data']}")
             return False
 
         if parsed["type"] == "init":
             self.perception.update(parsed)
-            assigned_unum = self.perception.state.unum
-            side = self.perception.state.side
             logger.info(
                 f"[Agente {self.unum}] Conectado — "
-                f"equipo: {self.team_name} | lado: {side} | unum: {assigned_unum}"
+                f"lado: {self.perception.state.side} | unum: {self.perception.state.unum}"
             )
             return True
 
-        logger.warning(f"[Agente {self.unum}] Respuesta inesperada: {response}")
         return False
 
     def run(self):
-        """Loop principal del agente."""
         if not self.connect():
             return
 
         self._running = True
-        logger.info(f"[Agente {self.unum}] Iniciando loop...")
+        logger.info(f"[Agente {self.unum}] Loop iniciado.")
 
         while self._running:
-            # 1. Recibir mensajes del servidor
-            message = self.client.receive()
+            # Drenar TODOS los mensajes pendientes del buffer UDP
+            # Esto evita el bug de "se queda quieto" por mensajes acumulados
+            acted = False
+            for _ in range(20):  # max 20 mensajes por ciclo
+                message = self.client.receive()
+                if message is None:
+                    break
 
-            if message is None:
-                continue
+                parsed = parse(message)
+                self.perception.update(parsed)
 
-            # 2. Parsear y actualizar percepción
-            parsed = parse(message)
-            self.perception.update(parsed)
-
-            # Solo actuar en mensajes sense_body (cada 100ms)
-            if parsed["type"] != "sense_body":
-                continue
-
-            # 3. Decidir acción
-            command = self.decision.decide()
-
-            # 4. Enviar comando
-            if command:
-                self.client.send(command)
+                # Actuar solo en sense_body (cada 100ms del simulador)
+                if parsed["type"] == "sense_body" and not acted:
+                    command = self.decision.decide()
+                    if command:
+                        self.client.send(command)
+                    acted = True
 
     def stop(self):
         self._running = False
