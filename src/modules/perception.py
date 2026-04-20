@@ -74,6 +74,7 @@ class WorldState:
     speed: float = 0.0
     speed_dir: float = 0.0
     head_angle: float = 0.0
+    body_direction: float = 0.0   # dirección acumulada del cuerpo en el campo
 
     # Visión
     visible_objects: list = field(default_factory=list)
@@ -94,8 +95,10 @@ class WorldState:
 
 
 class Perception:
-    def __init__(self):
+    def __init__(self, team_name: str = ""):
         self.state = WorldState()
+        self._team_name_val = team_name
+        self._view_requested = False  # Para pedir high quality view una sola vez
 
     def update(self, parsed: dict):
         t = parsed.get("type")
@@ -118,6 +121,10 @@ class Perception:
             self.state.speed      = d.get("speed", self.state.speed)
             self.state.speed_dir  = d.get("speed_angle", self.state.speed_dir)
             self.state.head_angle = d.get("head_angle", self.state.head_angle)
+            # body_dir es la dirección ABSOLUTA del cuerpo según el servidor.
+            # Es la fuente de verdad — mucho más fiable que acumular notify_turn().
+            if "body_dir" in d:
+                self.state.body_direction = float(d["body_dir"])
 
         elif t == "hear":
             sender  = d.get("sender", "")
@@ -153,9 +160,13 @@ class Perception:
                     self.state.opponents.append(entry)
 
     def _team_name(self) -> str:
-        return ""  # Se sobreescribe en DecisionMaker si se necesita
+        return self._team_name_val
 
-    # --- Helpers para la FSM ---
+    def notify_turn(self, moment: float):
+        """Llamar cada vez que se envía un turn() para mantener body_direction actualizado."""
+        self.state.body_direction = (self.state.body_direction + moment) % 360
+        if self.state.body_direction > 180:
+            self.state.body_direction -= 360
 
     def can_see_ball(self) -> bool:
         return self.state.ball_distance is not None

@@ -62,8 +62,12 @@ def _parse_see(message: str) -> dict:
         obj = {"name": name}
         if len(values) >= 2:
             try:
-                obj["distance"] = float(values[0])
-                obj["angle"]    = float(values[1])
+                obj["distance"]    = float(values[0])
+                obj["angle"]       = float(values[1])
+                # dist_change y dir_change (velocidad del objeto)
+                if len(values) >= 4:
+                    obj["dist_change"] = float(values[2])
+                    obj["dir_change"]  = float(values[3])
             except ValueError:
                 pass
         objects.append(obj)
@@ -74,7 +78,7 @@ def _parse_see(message: str) -> dict:
 
 
 def _parse_sense_body(message: str) -> dict:
-    """Extrae stamina, velocidad y ángulo del cuerpo."""
+    """Extrae stamina, velocidad, ángulo del cuerpo y dirección absoluta."""
     data = {}
     t = re.match(r"\(sense_body\s+(\d+)", message)
     if t:
@@ -93,6 +97,19 @@ def _parse_sense_body(message: str) -> dict:
     head = re.search(r"\(head_angle\s+([\d\.\-]+)", message)
     if head:
         data["head_angle"] = float(head.group(1))
+
+    # body_direction: el servidor envía (body_angle <deg>) en sense_body
+    # Este es el ángulo ABSOLUTO del cuerpo en el campo — la fuente de verdad.
+    # Sin esto, body_direction solo viene de notify_turn() y se desincroniza.
+    body = re.search(r"\(body_angle\s+([\d\.\-]+)", message)
+    if body:
+        data["body_dir"] = float(body.group(1))
+
+    # Fallback: algunos servidores usan (dir <x> <y>)
+    if "body_dir" not in data:
+        dir_m = re.search(r"\(dir\s+([\d\.\-]+)", message)
+        if dir_m:
+            data["body_dir"] = float(dir_m.group(1))
 
     return data
 

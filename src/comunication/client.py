@@ -14,7 +14,11 @@ class RCSSClient:
         self.host = host
         self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.settimeout(3.0)
+        # El simulador envía mensajes cada 100ms.
+        # Con 3s de timeout el loop se congela 3 segundos completos
+        # cada vez que no hay mensaje. Con 0.08s dreamos el buffer
+        # sin bloquear más de un ciclo de simulación.
+        self.socket.settimeout(0.08)
         self.server_addr = (host, port)
         self.connected = False
 
@@ -44,8 +48,11 @@ class RCSSClient:
         Retorna el mensaje de respuesta o None si falla.
         """
         msg = f"(init {team_name} (version {version}))"
+        # Solo para el init usamos un timeout más largo (el servidor puede tardar)
+        self.socket.settimeout(5.0)
         self.send(msg)
         response = self.receive()
+        self.socket.settimeout(0.08)  # Restaurar timeout rápido para el loop
         if response:
             self.connected = True
             logger.info(f"Init response: {response}")

@@ -22,8 +22,8 @@ class Agent:
         self.unum = unum
 
         self.client = RCSSClient(host, port)
-        self.perception = Perception()
-        self.decision = DecisionMaker(self.perception)
+        self.perception = Perception(team_name=team_name)
+        self.decision = DecisionMaker(self.perception, team_name=team_name)
         self._running = False
 
     def connect(self) -> bool:
@@ -56,10 +56,12 @@ class Agent:
         logger.info(f"[Agente {self.unum}] Loop iniciado.")
 
         while self._running:
-            # Drenar TODOS los mensajes pendientes del buffer UDP
-            # Esto evita el bug de "se queda quieto" por mensajes acumulados
+            # Drenar todos los mensajes pendientes del buffer UDP.
+            # Importante: actualizar percepción con TODOS los mensajes (see + sense_body),
+            # pero solo enviar UN comando por ciclo (cuando llega sense_body).
+            # Esto evita saturar el servidor con comandos y perder información visual.
             acted = False
-            for _ in range(20):  # max 20 mensajes por ciclo
+            for _ in range(30):  # max 30 msgs por ciclo (defensivo)
                 message = self.client.receive()
                 if message is None:
                     break
@@ -67,12 +69,16 @@ class Agent:
                 parsed = parse(message)
                 self.perception.update(parsed)
 
-                # Actuar solo en sense_body (cada 100ms del simulador)
+                # Actuar en sense_body (señal de sincronía con el simulador, cada 100ms)
+                # Solo actuamos una vez por ciclo aunque lleguen varios sense_body
                 if parsed["type"] == "sense_body" and not acted:
                     command = self.decision.decide()
                     if command:
                         self.client.send(command)
                     acted = True
+
+            # Si no llegó ningún sense_body en este ciclo (buffer vacío),
+            # no bloqueamos — el timeout de 0.08s en el socket ya es suficiente.
 
     def stop(self):
         self._running = False
