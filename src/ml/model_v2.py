@@ -52,7 +52,7 @@ def build_model_v2(input_size=VECTOR_SIZE):
     x = keras.layers.BatchNormalization()(x)
     x = keras.layers.Dropout(0.15)(x)
 
-    x = keras.layers.Dense(32, activation="relu")(x)
+    x = keras.layers.Dense(32, activation="relu", name="shared_features")(x)
 
     action_head = keras.layers.Dense(
         N_ACTIONS, activation="softmax", name="action_probs"
@@ -62,9 +62,18 @@ def build_model_v2(input_size=VECTOR_SIZE):
         4, activation="tanh", name="action_params"
     )(x)
 
+    value_head = keras.layers.Dense(64, activation="relu", name="value_dense_1")(x)
+    value_head = keras.layers.Dropout(0.1, name="value_dropout")(value_head)
+    value_head = keras.layers.Dense(32, activation="relu", name="value_dense_2")(value_head)
+    value_head = keras.layers.Dense(1, activation="linear", name="value")(value_head)
+
     model = keras.Model(
         inputs=inputs,
-        outputs={"action_probs": action_head, "action_params": param_head},
+        outputs={
+            "action_probs": action_head,
+            "action_params": param_head,
+            "value": value_head,
+        },
         name="agent_brain_v2",
     )
     return model
@@ -76,12 +85,17 @@ def compile_model_v2(model, learning_rate=1e-3):
         loss={
             "action_probs": "sparse_categorical_crossentropy",
             "action_params": "mse",
+            "value": "mse",
         },
         loss_weights={
             "action_probs": 1.0,
             "action_params": LAMBDA_REGRESSION,
+            "value": 0.5,
         },
-        metrics={"action_probs": "accuracy"},
+        metrics={
+            "action_probs": "accuracy",
+            "value": "mae",
+        },
     )
     return model
 
@@ -102,13 +116,19 @@ class AgentBrainV2:
 
         probs = outputs["action_probs"].numpy()[0]
         params = outputs["action_params"].numpy()[0]
+        value = outputs["value"].numpy()[0, 0]
 
         if self.training:
             action_idx = self._epsilon_greedy(probs)
         else:
             action_idx = int(np.argmax(probs))
 
-        return action_idx, params
+        return action_idx, params, value
+
+    def predict_value(self, state_vec):
+        x = state_vec.reshape(1, -1)
+        outputs = self.model(x, training=False)
+        return float(outputs["value"].numpy()[0, 0])
 
     def action_to_command(self, action_idx, params, side):
         from modules import actuators
@@ -139,14 +159,18 @@ class AgentBrainV2:
             return None
         return None
 
-    def train_step(self, states, actions, params, sample_weight=None):
+    def train_step(self, states, actions, params, values=None, sample_weight=None):
         if not self._compiled:
             compile_model_v2(self.model)
             self._compiled = True
 
+        targets = {"action_probs": actions, "action_params": params}
+        if values is not None:
+            targets["value"] = values
+
         return self.model.train_on_batch(
             states,
-            {"action_probs": actions, "action_params": params},
+            targets,
             sample_weight=sample_weight,
         )
 

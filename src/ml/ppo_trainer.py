@@ -88,7 +88,7 @@ class PPOTrainer:
             )
             self.buffer.push(exp)
 
-        action_idx, params = self.brain.predict(state_vec)
+        action_idx, params, _ = self.brain.predict(state_vec)
 
         self._prev_state = state_vec.copy()
         self._prev_action = action_idx
@@ -123,22 +123,20 @@ class PPOTrainer:
             compile_model_v2(self.brain.model)
             self.brain._compiled = True
 
+        returns = self._calculate_returns(rewards, dones)
+
         try:
             for _ in range(PPO_EPOCHS):
                 with tf.GradientTape() as tape:
                     outputs = self.brain.model(states, training=True)
                     probs = outputs["action_probs"]
+                    values = tf.squeeze(outputs["value"], axis=1)
 
                     action_mask = tf.one_hot(actions, N_ACTIONS)
                     selected_probs = tf.reduce_sum(probs * action_mask, axis=1)
                     log_probs = tf.math.log(selected_probs + 1e-10)
 
-                    next_outputs = self.brain.model(next_states, training=False)
-                    next_probs = next_outputs["action_probs"]
-                    next_values = tf.reduce_max(next_probs, axis=1)
-                    targets = rewards + GAMMA * next_values * (1.0 - dones)
-
-                    advantages = targets - tf.reduce_max(probs, axis=1)
+                    advantages = tf.constant(returns, dtype=tf.float32) - values
                     advantages = (advantages - tf.reduce_mean(advantages)) / (tf.math.reduce_std(advantages) + 1e-8)
 
                     ratio = tf.exp(log_probs - tf.stop_gradient(log_probs))
@@ -150,14 +148,18 @@ class PPOTrainer:
                     param_loss = tf.keras.losses.mse(params_arr, outputs["action_params"])
                     param_loss = tf.reduce_mean(param_loss * sample_weights)
 
-                    total_loss = actor_loss + LAMBDA_REGRESSION * param_loss
+                    value_loss = tf.reduce_mean(
+                        tf.square(values - tf.constant(returns, dtype=tf.float32)) * sample_weights
+                    )
+
+                    total_loss = actor_loss + LAMBDA_REGRESSION * param_loss + 0.5 * value_loss
 
                 grads = tape.gradient(total_loss, self.brain.model.trainable_variables)
                 self.brain.model.optimizer.apply_gradients(
                     zip(grads, self.brain.model.trainable_variables)
                 )
 
-            td_errors = np.abs(rewards - tf.reduce_max(probs, axis=1).numpy())
+            td_errors = np.abs(rewards - values.numpy())
             if indices is not None:
                 self.buffer.update_priorities(indices, td_errors)
 
@@ -165,6 +167,17 @@ class PPOTrainer:
 
         except Exception as e:
             logger.error(f"[PPOTrainer] Error: {e}")
+
+    @staticmethod
+    def _calculate_returns(rewards, dones, gamma=GAMMA):
+        returns = np.zeros_like(rewards, dtype=np.float32)
+        running_return = 0.0
+        for t in reversed(range(len(rewards))):
+            if dones[t]:
+                running_return = 0.0
+            running_return = rewards[t] + gamma * running_return
+            returns[t] = running_return
+        return returns
 
     def notify_episode_end(self):
         if self._prev_state is not None and len(self.buffer) > 0:
