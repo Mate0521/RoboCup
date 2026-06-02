@@ -21,16 +21,16 @@ def test_all_states_have_unique_indices():
 def test_all_states_mapped():
     """Verifica que cada estado tenga un mapping válido."""
     expected = {
-        State.WAIT: 0,
-        State.SEARCH_BALL: 1,
-        State.MOVE_TO_BALL: 2,
-        State.KICK_BALL: 3,
-        State.GO_TO_POSITION: 4,
-        State.DEAD_BALL: 5,
+        State.BEFORE_KICK_OFF: 0,
+        State.PLAY_ON: 1,
+        State.GO_TO_POSITION: 2,
+        State.CHASE_BALL: 3,
+        State.KICK_BALL: 4,
+        State.DRIBBLE: 5,
         State.SUPPORT: 6,
         State.PRESS: 7,
-        State.DRIBBLE: 8,
-        State.COVER_LANE: 9,
+        State.DEFEND: 8,
+        State.INTERCEPT: 9,
     }
     for state, expected_idx in expected.items():
         actual = _get_fsm_idx(state)

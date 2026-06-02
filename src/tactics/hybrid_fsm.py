@@ -17,16 +17,16 @@ PRESS_DURATION_MAX = 15
 
 
 class State(Enum):
-    WAIT = 0
-    SEARCH_BALL = 1
-    MOVE_TO_BALL = 2
-    KICK_BALL = 3
-    GO_TO_POSITION = 4
-    DEAD_BALL = 5
+    BEFORE_KICK_OFF = 0
+    PLAY_ON = 1
+    GO_TO_POSITION = 2
+    CHASE_BALL = 3
+    KICK_BALL = 4
+    DRIBBLE = 5
     SUPPORT = 6
     PRESS = 7
-    DRIBBLE = 8
-    COVER_LANE = 9
+    DEFEND = 8
+    INTERCEPT = 9
 
 
 class HybridFSM:
@@ -50,13 +50,14 @@ class HybridFSM:
             return None
 
         if pm == PlayMode.BEFORE_KICK_OFF:
-            self.state = State.WAIT
+            self.state = State.BEFORE_KICK_OFF
             return None
 
         if self.role == "goalkeeper":
             return self._gk()
 
         if pm != PlayMode.PLAY_ON:
+            self.state = State.PLAY_ON
             my_modes = {
                 PlayMode.KICK_OFF_L, PlayMode.FREE_KICK_L, PlayMode.CORNER_KICK_L,
                 PlayMode.KICK_IN_L, PlayMode.GOAL_KICK_L, PlayMode.INDIRECT_FREE_KICK_L,
@@ -69,8 +70,6 @@ class HybridFSM:
             return self._go_dead_position()
 
         return self._play(pressing)
-
-    def _transition_to(self, new_state):
         if self.state != new_state:
             self._last_state = self.state
             self.state = new_state
@@ -122,8 +121,18 @@ class HybridFSM:
 
         bb = Blackboard()
         ball_owner = bb.get_ball_owner()
-        if ball_owner and ball_owner != self.unum:
+        ball_pos = bb.ball.get("pos")
+
+        if ball_owner and ball_owner > 0 and ball_owner != self.unum:
             return self._handle_support()
+
+        if ball_owner is not None and ball_owner < 0:
+            nearest = bb.am_i_nearest_to_ball(self.unum)
+            if ball_pos and self._is_threat(ball_pos):
+                return self._handle_intercept()
+            if nearest:
+                return self._handle_press()
+            return self._handle_defend()
 
         return self._handle_go_to_position()
 
@@ -163,13 +172,12 @@ class HybridFSM:
         return self._pass_to_teammate()
 
     def _handle_chase(self):
-        self._transition_to(State.MOVE_TO_BALL)
+        self._transition_to(State.CHASE_BALL)
         state = self.perception.state
         ba = state.ball_angle
         bd = state.ball_distance
 
         if ba is None:
-            self._transition_to(State.SEARCH_BALL)
             return self._search_ball()
 
         if abs(ba) > 6:
@@ -227,7 +235,7 @@ class HybridFSM:
         bb = Blackboard()
         if not bb.am_i_nearest_to_ball(self.unum):
             self._press_cycles = 0
-            return self._handle_cover_lane()
+            return self._handle_defend()
 
         if bd is not None and bd < 5:
             if abs(ba or 0) > 6:
@@ -241,8 +249,8 @@ class HybridFSM:
 
         return actuators.dash(DASH_POWER + 25)
 
-    def _handle_cover_lane(self):
-        self._transition_to(State.COVER_LANE)
+    def _handle_defend(self):
+        self._transition_to(State.DEFEND)
         bb = Blackboard()
         ball_pos = bb.ball.get("pos")
         state = self.perception.state
@@ -259,6 +267,29 @@ class HybridFSM:
             return self._navigate(cx, cy)
 
         return self._handle_go_to_position()
+
+    def _handle_intercept(self):
+        self._transition_to(State.INTERCEPT)
+        state = self.perception.state
+        sx, sy = state.self_x, state.self_y
+
+        goal_x = GOAL_L_X if self.side == "l" else GOAL_R_X
+        inter_x = (sx + goal_x) / 2 if sx is not None else (goal_x + 10)
+        inter_y = 0
+
+        bb = Blackboard()
+        ball_pos = bb.ball.get("pos")
+        if ball_pos:
+            inter_y = max(-15, min(15, ball_pos[1] * 0.7))
+
+        return self._navigate(inter_x, inter_y)
+
+    def _is_threat(self, ball_pos):
+        if ball_pos is None:
+            return False
+        goal_x = GOAL_L_X if self.side == "l" else GOAL_R_X
+        dx = abs(ball_pos[0] - goal_x)
+        return dx < 25 and abs(ball_pos[1]) < 15
 
     def _handle_go_to_position(self):
         self._transition_to(State.GO_TO_POSITION)

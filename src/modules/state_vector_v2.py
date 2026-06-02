@@ -33,9 +33,9 @@ PM_GROUP_NAMES = list(PM_GROUPS.keys())
 def _get_fsm_idx(fsm_state):
     from tactics.hybrid_fsm import State
     mapping = {
-        State.WAIT: 0, State.SEARCH_BALL: 1, State.MOVE_TO_BALL: 2,
-        State.KICK_BALL: 3, State.GO_TO_POSITION: 4, State.DEAD_BALL: 5,
-        State.SUPPORT: 6, State.PRESS: 7, State.DRIBBLE: 8, State.COVER_LANE: 9,
+        State.BEFORE_KICK_OFF: 0, State.PLAY_ON: 1, State.GO_TO_POSITION: 2,
+        State.CHASE_BALL: 3, State.KICK_BALL: 4, State.DRIBBLE: 5,
+        State.SUPPORT: 6, State.PRESS: 7, State.DEFEND: 8, State.INTERCEPT: 9,
     }
     return mapping.get(fsm_state, 0)
 
