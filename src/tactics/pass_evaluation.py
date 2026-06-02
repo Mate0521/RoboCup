@@ -12,6 +12,11 @@ PASS_THRESHOLD = 0.50
 
 SHORT_PASS_MAX = 12.0
 SAFE_RECEPTOR_DIST = 5.0
+OPPONENT_SPEED = 0.7
+BALL_SPEED_MAX = 3.0
+PASS_POWER_COEFF = 2.5
+MIN_KICK_POWER = 15.0
+MAX_KICK_POWER = 100.0
 
 class PassOption:
     def __init__(self, receiver_unum, target_x, target_y, distance, score, risk):
@@ -33,9 +38,12 @@ class PassEvaluator:
     def set_ball_predictor(self, predictor):
         self.ball_predictor = predictor
 
-    def evaluate(self, passer_pos, passer_side, teammates, opponents, ball_pos=None):
+    def evaluate(self, passer_pos, passer_side, teammates, opponents, ball_pos=None, ball_predictor=None):
         if not teammates:
             return None
+
+        if ball_predictor is not None:
+            self.set_ball_predictor(ball_predictor)
 
         best_pass = None
 
@@ -45,10 +53,6 @@ class PassEvaluator:
 
             if dist > MAX_PASS_DISTANCE:
                 continue
-
-            angle = math.degrees(math.atan2(
-                ry - passer_pos[0], rx - passer_pos[1]
-            ))
 
             dist_score = 1.0 - (dist / MAX_PASS_DISTANCE)
 
@@ -83,9 +87,53 @@ class PassEvaluator:
             return best_pass
         return None
 
+    def _estimate_pass_velocity(self, passer_pos, receiver_pos):
+        dx = receiver_pos[0] - passer_pos[0]
+        dy = receiver_pos[1] - passer_pos[1]
+        dist = math.hypot(dx, dy)
+        if dist < 0.01:
+            return (0.0, 0.0)
+        power = max(MIN_KICK_POWER, min(MAX_KICK_POWER, dist * PASS_POWER_COEFF))
+        speed = (power / MAX_KICK_POWER) * BALL_SPEED_MAX
+        return (dx / dist * speed, dy / dist * speed)
+
     def _calculate_risk(self, passer_pos, receiver_pos, opponents):
         px1, py1 = passer_pos
         px2, py2 = receiver_pos
+
+        if self.ball_predictor is not None:
+            vel = self._estimate_pass_velocity(passer_pos, receiver_pos)
+            trajectory = self.ball_predictor.predict(passer_pos, vel, n_cycles=25)
+            for t, (bx, by) in enumerate(trajectory):
+                if t == 0:
+                    continue
+                for opp in opponents:
+                    ox = opp.get("x", 0)
+                    oy = opp.get("y", 0)
+                    opp_dist = math.hypot(bx - ox, by - oy)
+                    if opp_dist > 3.0:
+                        continue
+                    if opp_dist / OPPONENT_SPEED < t:
+                        return (1.0, opp.get("unum"))
+
+            for t, (bx, by) in enumerate(trajectory):
+                if t == 0 or t % 3 != 0:
+                    continue
+                if t > len(trajectory) * 0.7:
+                    break
+                for opp in opponents:
+                    ox = opp.get("x", 0)
+                    oy = opp.get("y", 0)
+                    opp_to_receiver = math.hypot(px2 - ox, py2 - oy)
+                    if opp_to_receiver > 5.0:
+                        continue
+                    ball_to_receiver = math.hypot(bx - px2, by - py2)
+                    receiver_arrival = len(trajectory) - 1
+                    if ball_to_receiver < 1.0:
+                        receiver_arrival = t
+                    if opp_to_receiver / OPPONENT_SPEED <= receiver_arrival:
+                        tightness = 1.0 - (opp_to_receiver / 5.0)
+                        return (max(0.3, tightness), opp.get("unum"))
 
         dx = px2 - px1
         dy = py2 - py1

@@ -122,9 +122,17 @@ class HybridController:
         if not teammates:
             teammates = []
 
+        ball_predictor = None
+        try:
+            from prediction.ball_predictor import BallPredictor
+            ball_predictor = BallPredictor()
+        except Exception:
+            pass
+
         evaluator = PassEvaluator()
         best = evaluator.evaluate(
-            (state.self_x, state.self_y), self.side, teammates, opponents
+            (state.self_x, state.self_y), self.side, teammates, opponents,
+            ball_predictor=ball_predictor,
         )
         if best:
             return {
