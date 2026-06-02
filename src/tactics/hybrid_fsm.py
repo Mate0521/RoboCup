@@ -70,10 +70,14 @@ class HybridFSM:
             return self._go_dead_position()
 
         return self._play(pressing)
+
+    def _transition_to(self, new_state):
         if self.state != new_state:
-            self._last_state = self.state
+            old = self.state
             self.state = new_state
+            self._last_state = old
             self._state_duration = 0
+            logger.debug(f"FSM: {old.name} -> {new_state.name}")
         else:
             self._state_duration += 1
 
