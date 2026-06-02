@@ -8,7 +8,7 @@ from modules.perception import Perception, PlayMode
 from modules import actuators
 from modules.role_assignment import get_role, get_tactical_position, clamp_to_zone
 
-from perception.localizer import EKFLocalizer
+from perception.localizer import Localizer
 from prediction.ball_predictor import BallPredictor
 from tactics.hybrid_fsm import HybridFSM
 from coordination.blackboard import Blackboard
@@ -26,7 +26,7 @@ class Agent:
 
         self.client = RCSSClient(host, port)
         self.perception = Perception(team_name=team_name)
-        self.localizer = EKFLocalizer()
+        self.localizer = Localizer()
         self.ball_predictor = BallPredictor()
         self.blackboard = Blackboard()
 
