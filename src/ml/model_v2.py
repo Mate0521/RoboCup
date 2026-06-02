@@ -130,6 +130,22 @@ class AgentBrainV2:
         outputs = self.model(x, training=False)
         return float(outputs["value"].numpy()[0, 0])
 
+    def predict_with_log_prob(self, state_vec):
+        x = state_vec.reshape(1, -1)
+        outputs = self.model(x, training=False)
+
+        probs = outputs["action_probs"].numpy()[0]
+        params = outputs["action_params"].numpy()[0]
+        value = float(outputs["value"].numpy()[0, 0])
+
+        if self.training:
+            action_idx = self._epsilon_greedy(probs)
+        else:
+            action_idx = int(np.argmax(probs))
+
+        log_prob = float(np.log(probs[action_idx] + 1e-10))
+        return action_idx, params, value, log_prob
+
     def action_to_command(self, action_idx, params, side):
         from modules import actuators
 

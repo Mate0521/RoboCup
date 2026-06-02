@@ -53,7 +53,8 @@ class HybridController:
 
             if self.trainer:
                 score_diff = self._get_score_diff()
-                action_idx, params = self.trainer.step(state_vec, score_diff)
+                result = self.trainer.step(state_vec, score_diff)
+                action_idx, params = result[0], result[1]
             elif self.brain:
                 action_idx, params, _ = self.brain.predict(state_vec)
             else:

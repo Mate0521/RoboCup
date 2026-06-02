@@ -113,28 +113,49 @@ class HybridFSM:
         if pressing:
             radius *= 1.6
 
-        if pressing and bd is not None and bd < radius * 1.5:
-            return self._handle_press()
-
         sx, sy = state.self_x, state.self_y
-        if bd is not None and bd < radius:
-            return self._handle_chase()
 
-        if sx is not None and bd is not None and bd < radius * 1.2:
+        chase_radii = {"goalkeeper": 8, "defender": 12, "midfielder": 18, "forward": 22}
+        chase_radius = chase_radii.get(self.role, 15) * (1.6 if pressing else 1.0)
+
+        if bd is not None and bd < chase_radius:
             return self._handle_chase()
 
         bb = Blackboard()
         ball_owner = bb.get_ball_owner()
         ball_pos = bb.ball.get("pos")
 
+        owner_dist = None
+        if ball_pos and len(ball_pos) >= 2 and ball_pos[0] is not None and sx is not None:
+            owner_dist = math.hypot(sx - ball_pos[0], sy - ball_pos[1])
+        else:
+            return self._handle_go_to_position()
+
+        if self.role == "defender":
+            goal_x = GOAL_L_X if self.side == "l" else GOAL_R_X
+            if abs(ball_pos[0] - goal_x) > 30:
+                return self._handle_go_to_position()
+
+        if self.role == "forward":
+            if (self.side == "l" and ball_pos[0] < -15) or (self.side == "r" and ball_pos[0] > 15):
+                if abs(sx - ball_pos[0]) > 25:
+                    return self._handle_go_to_position()
+
+        if owner_dist > 25:
+            return self._handle_go_to_position()
+
         if ball_owner and ball_owner > 0 and ball_owner != self.unum:
-            return self._handle_support()
+            if self.role in ("midfielder", "forward"):
+                return self._handle_support()
+            if owner_dist < 20:
+                return self._handle_support()
+            return self._handle_go_to_position()
 
         if ball_owner is not None and ball_owner < 0:
-            nearest = bb.am_i_nearest_to_ball(self.unum)
             if ball_pos and self._is_threat(ball_pos):
                 return self._handle_intercept()
-            if nearest:
+            nearest = bb.am_i_nearest_to_ball(self.unum)
+            if nearest and owner_dist < 20:
                 return self._handle_press()
             return self._handle_defend()
 
@@ -207,18 +228,16 @@ class HybridFSM:
         if sx is None:
             return self._search_ball()
 
-        dist_to_owner = math.hypot(sx - ball_pos[0], sy - ball_pos[1])
+        support_spread = {"defender": 18, "midfielder": 14, "forward": 10, "goalkeeper": 25}
+        spread = support_spread.get(self.role, 14)
+        role_angle_offset = {"defender": 0, "midfielder": 30, "forward": 60}
+        base_angle = role_angle_offset.get(self.role, 30)
 
-        if dist_to_owner < 5:
-            offset_angle = math.radians(60) * (1 if self.unum % 2 == 0 else -1)
-            tx = ball_pos[0] + 10 * math.cos(offset_angle)
-            ty = ball_pos[1] + 10 * math.sin(offset_angle)
-            return self._navigate(tx, ty)
+        parity = 1 if self.unum % 2 == 0 else -1
+        offset_angle = math.radians(base_angle) * parity
+        tx = ball_pos[0] + spread * math.cos(offset_angle)
+        ty = ball_pos[1] + spread * math.sin(offset_angle)
 
-        if 5 <= dist_to_owner <= 15:
-            return self._navigate(ball_pos[0], ball_pos[1])
-
-        tx, ty = self._calculate_support_position(ball_pos)
         return self._navigate(tx, ty)
 
     def _handle_press(self):
@@ -311,28 +330,6 @@ class HybridFSM:
 
         return self._navigate(tx, ty)
 
-    def _calculate_support_position(self, ball_pos):
-        state = self.perception.state
-        sx, sy = state.self_x, state.self_y
-        if sx is None:
-            return (ball_pos[0] + 10, ball_pos[1])
-
-        dx = sx - ball_pos[0]
-        dy = sy - ball_pos[1]
-        dist = math.hypot(dx, dy)
-
-        if dist < 0.01:
-            return (ball_pos[0] + 10, ball_pos[1] + 5 * (1 if self.unum % 2 == 0 else -1))
-
-        desired_dist = 12
-        ratio = desired_dist / dist
-        tx = ball_pos[0] + dx * ratio
-        ty = ball_pos[1] + dy * ratio
-
-        tx = max(-52.5, min(52.5, tx))
-        ty = max(-34, min(34, ty))
-        return (tx, ty)
-
     def _pass_to_teammate(self):
         state = self.perception.state
 
@@ -408,6 +405,12 @@ class HybridFSM:
         return actuators.turn(TURN_SPEED)
 
     def _navigate(self, tx, ty):
+        from modules.role_assignment import get_strict_zone, clamp_to_zone
+        from util.field_constants import clamp_to_field
+
+        tx, ty = clamp_to_zone(tx, ty, self.unum, self.side)
+        tx, ty = clamp_to_field(tx, ty, margin=0.5)
+
         state = self.perception.state
         sx, sy = state.self_x, state.self_y
         if sx is None or sy is None:

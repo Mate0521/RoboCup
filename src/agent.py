@@ -15,6 +15,11 @@ from coordination.blackboard import Blackboard
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_PLAY_MODES = {
+    PlayMode.GOAL_L, PlayMode.GOAL_R,
+    PlayMode.TIME_OVER, PlayMode.HALF_TIME,
+}
+
 
 class Agent:
     def __init__(self, host, port, team_name, unum, training=False):
@@ -44,6 +49,7 @@ class Agent:
         self._lost_ball_count = 0
         self._had_ball_last = False
         self._cycles_in_before_kickoff = 0
+        self._episode_ended = False
 
     def connect(self):
         logger.info(f"[{self.unum}] Conectando...")
@@ -178,10 +184,15 @@ class Agent:
 
         if pm != self._last_pm:
             logger.info(f"[{unum}] {pm.value}")
-            if pm in (PlayMode.GOAL_L, PlayMode.GOAL_R, PlayMode.TIME_OVER, PlayMode.HALF_TIME):
+            if pm in _TERMINAL_PLAY_MODES:
                 self._initial_positioned = False
                 self._fsm = None
+                self._episode_ended = True
             self._last_pm = pm
+
+        if self._episode_ended and self._trainer:
+            self._trainer.end_episode()
+            self._episode_ended = False
 
         pressing = 1 <= self._lost_ball_count <= 20
 

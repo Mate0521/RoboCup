@@ -4,185 +4,255 @@ import logging
 from collections import deque
 
 from ml.model_v2 import AgentBrainV2, compile_model_v2, N_ACTIONS, LAMBDA_REGRESSION
-from ml.reward_shaping import AdvancedReward
 
 logger = logging.getLogger(__name__)
 
-BUFFER_SIZE = 50_000
-BATCH_SIZE = 128
-TRAIN_EVERY = 5
-SAVE_EVERY = 300
-GAMMA = 0.95
+TRAJECTORY_LENGTH = 1024
+MINIBATCH_SIZE = 64
+TRAIN_EVERY = 128
+SAVE_EVERY = 500
+GAMMA = 0.99
+GAE_LAMBDA = 0.95
 CLIP_EPSILON = 0.2
-PPO_EPOCHS = 3
+PPO_EPOCHS = 10
+ENTROPY_COEF = 0.01
+VALUE_COEF = 0.5
+MAX_GRAD_NORM = 0.5
+LEARNING_RATE = 3e-4
 
 
-class PrioritizedExperience:
-    __slots__ = ("state", "action", "params", "reward", "next_state", "done", "priority")
+class TrajectoryBuffer:
+    def __init__(self, max_size=TRAJECTORY_LENGTH):
+        self.max_size = max_size
+        self.states = []
+        self.actions = []
+        self.params = []
+        self.rewards = []
+        self.values = []
+        self.log_probs = []
+        self.dones = []
 
-    def __init__(self, state, action, params, reward, next_state, done, priority=1.0):
-        self.state = state
-        self.action = action
-        self.params = params
-        self.reward = reward
-        self.next_state = next_state
-        self.done = done
-        self.priority = priority
+    def store(self, state, action, params, reward, value, log_prob, done=False):
+        self.states.append(state)
+        self.actions.append(action)
+        self.params.append(params)
+        self.rewards.append(reward)
+        self.values.append(value)
+        self.log_probs.append(log_prob)
+        self.dones.append(done)
 
+    def get(self):
+        return (
+            np.array(self.states, dtype=np.float32),
+            np.array(self.actions, dtype=np.int32),
+            np.array(self.params, dtype=np.float32),
+            np.array(self.rewards, dtype=np.float32),
+            np.array(self.values, dtype=np.float32),
+            np.array(self.log_probs, dtype=np.float32),
+            np.array(self.dones, dtype=np.float32),
+        )
 
-class PrioritizedReplayBuffer:
-    def __init__(self, max_size=BUFFER_SIZE, alpha=0.6):
-        self.buffer = deque(maxlen=max_size)
-        self.alpha = alpha
-        self._max_priority = 1.0
-
-    def push(self, exp):
-        exp.priority = self._max_priority
-        self.buffer.append(exp)
-
-    def sample(self, batch_size, beta=0.4):
-        if len(self.buffer) < batch_size:
-            return None, None, None
-        priorities = np.array([e.priority for e in self.buffer[-batch_size:]])
-        probs = priorities ** self.alpha
-        probs /= probs.sum()
-        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
-        batch = [self.buffer[i] for i in indices]
-        total = len(self.buffer)
-        weights = (total * probs[indices]) ** (-beta)
-        weights /= weights.max()
-        return batch, indices, weights
-
-    def update_priorities(self, indices, td_errors):
-        for idx, td in zip(indices, td_errors):
-            self.buffer[idx].priority = abs(td) + 1e-6
-            self._max_priority = max(self._max_priority, self.buffer[idx].priority)
+    def clear(self):
+        self.states.clear()
+        self.actions.clear()
+        self.params.clear()
+        self.rewards.clear()
+        self.values.clear()
+        self.log_probs.clear()
+        self.dones.clear()
 
     def __len__(self):
-        return len(self.buffer)
+        return len(self.states)
 
 
 class PPOTrainer:
     def __init__(self, brain, reward_calc):
         self.brain = brain
         self.reward_calc = reward_calc
-        self.buffer = PrioritizedReplayBuffer()
+        self.trajectory = TrajectoryBuffer()
         self._cycle = 0
+
         self._prev_state = None
         self._prev_action = None
         self._prev_params = None
-        self._beta = 0.4
-        self._beta_increment = 0.001
+        self._prev_value = None
+        self._prev_log_prob = None
 
-    def step(self, state_vec, score_diff):
+        self._episode_reward = 0.0
+        self._episode_accum = []
+        self._best_ep_reward = -1e9
+
+        if not brain._compiled:
+            compile_model_v2(brain.model, LEARNING_RATE)
+            brain._compiled = True
+
+    def step(self, state_vec, score_diff, done=False):
         reward = self.reward_calc.calculate(score_diff)
+        self._episode_reward += reward
 
         if self._prev_state is not None:
-            exp = PrioritizedExperience(
-                state=self._prev_state,
-                action=self._prev_action,
-                params=self._prev_params,
-                reward=reward,
-                next_state=state_vec.copy(),
-                done=False,
+            self.trajectory.store(
+                self._prev_state,
+                self._prev_action,
+                self._prev_params,
+                reward,
+                self._prev_value,
+                self._prev_log_prob,
+                done=done,
             )
-            self.buffer.push(exp)
 
-        action_idx, params, _ = self.brain.predict(state_vec)
+        action_idx, params, value, log_prob = self.brain.predict_with_log_prob(state_vec)
 
         self._prev_state = state_vec.copy()
         self._prev_action = action_idx
         self._prev_params = params.copy()
+        self._prev_value = value
+        self._prev_log_prob = log_prob
 
         self._cycle += 1
-        self._beta = min(1.0, self._beta + self._beta_increment)
 
-        if self._cycle % TRAIN_EVERY == 0 and len(self.buffer) >= BATCH_SIZE:
+        if self._cycle % TRAIN_EVERY == 0 and len(self.trajectory) >= MINIBATCH_SIZE:
             self._train()
 
         if self._cycle % SAVE_EVERY == 0:
             self.brain.save_weights()
-            logger.info(f"[PPOTrainer] Pesos guardados — ciclo {self._cycle}")
+            avg_reward = np.mean(self._episode_accum[-20:]) if self._episode_accum else 0.0
+            logger.info(
+                f"[PPOTrainer] ciclo={self._cycle} | "
+                f"buffer={len(self.trajectory)} | "
+                f"ep_reward={self._episode_reward:.1f} | "
+                f"avg20={avg_reward:.1f}"
+            )
 
-        return action_idx, params
+        return action_idx, params, value, log_prob
 
-    def _train(self):
-        batch, indices, weights = self.buffer.sample(BATCH_SIZE, self._beta)
-        if batch is None:
-            return
+    def end_episode(self):
+        if self._prev_state is not None and len(self.trajectory) > 0:
+            self.trajectory.dones[-1] = True
 
-        states = np.stack([e.state for e in batch])
-        actions = np.array([e.action for e in batch], dtype=np.int32)
-        params_arr = np.stack([e.params for e in batch])
-        rewards = np.array([e.reward for e in batch], dtype=np.float32)
-        next_states = np.stack([e.next_state for e in batch])
-        dones = np.array([e.done for e in batch], dtype=np.float32)
-        sample_weights = weights if weights is not None else None
+        self._episode_accum.append(self._episode_reward)
+        if len(self._episode_accum) > 100:
+            self._episode_accum.pop(0)
 
-        if not self.brain._compiled:
-            compile_model_v2(self.brain.model)
-            self.brain._compiled = True
+        if self._episode_reward > self._best_ep_reward:
+            self._best_ep_reward = self._episode_reward
+            self.brain.save_weights()
 
-        returns = self._calculate_returns(rewards, dones)
-
-        try:
-            for _ in range(PPO_EPOCHS):
-                with tf.GradientTape() as tape:
-                    outputs = self.brain.model(states, training=True)
-                    probs = outputs["action_probs"]
-                    values = tf.squeeze(outputs["value"], axis=1)
-
-                    action_mask = tf.one_hot(actions, N_ACTIONS)
-                    selected_probs = tf.reduce_sum(probs * action_mask, axis=1)
-                    log_probs = tf.math.log(selected_probs + 1e-10)
-
-                    advantages = tf.constant(returns, dtype=tf.float32) - values
-                    advantages = (advantages - tf.reduce_mean(advantages)) / (tf.math.reduce_std(advantages) + 1e-8)
-
-                    ratio = tf.exp(log_probs - tf.stop_gradient(log_probs))
-                    clip_ratio = tf.clip_by_value(ratio, 1.0 - CLIP_EPSILON, 1.0 + CLIP_EPSILON)
-                    actor_loss = -tf.reduce_mean(
-                        tf.minimum(ratio * advantages, clip_ratio * advantages) * sample_weights
-                    )
-
-                    param_loss = tf.keras.losses.mse(params_arr, outputs["action_params"])
-                    param_loss = tf.reduce_mean(param_loss * sample_weights)
-
-                    value_loss = tf.reduce_mean(
-                        tf.square(values - tf.constant(returns, dtype=tf.float32)) * sample_weights
-                    )
-
-                    total_loss = actor_loss + LAMBDA_REGRESSION * param_loss + 0.5 * value_loss
-
-                grads = tape.gradient(total_loss, self.brain.model.trainable_variables)
-                self.brain.model.optimizer.apply_gradients(
-                    zip(grads, self.brain.model.trainable_variables)
-                )
-
-            td_errors = np.abs(rewards - values.numpy())
-            if indices is not None:
-                self.buffer.update_priorities(indices, td_errors)
-
-            self.brain.decay_epsilon()
-
-        except Exception as e:
-            logger.error(f"[PPOTrainer] Error: {e}")
-
-    @staticmethod
-    def _calculate_returns(rewards, dones, gamma=GAMMA):
-        returns = np.zeros_like(rewards, dtype=np.float32)
-        running_return = 0.0
-        for t in reversed(range(len(rewards))):
-            if dones[t]:
-                running_return = 0.0
-            running_return = rewards[t] + gamma * running_return
-            returns[t] = running_return
-        return returns
-
-    def notify_episode_end(self):
-        if self._prev_state is not None and len(self.buffer) > 0:
-            self.buffer.buffer[-1].done = True
+        self._episode_reward = 0.0
         self.reward_calc.reset()
         self._prev_state = None
         self._prev_action = None
         self._prev_params = None
+        self._prev_value = None
+        self._prev_log_prob = None
+
+    def _train(self):
+        states, actions, params, rewards, values, log_probs, dones = self.trajectory.get()
+        n = len(states)
+        if n < MINIBATCH_SIZE:
+            return
+
+        returns = self._compute_gae(rewards, dones, values)
+        advantages = returns - values
+        adv_mean = advantages.mean()
+        adv_std = advantages.std() + 1e-8
+        advantages = (advantages - adv_mean) / adv_std
+
+        states_t = tf.constant(states)
+        actions_t = tf.constant(actions)
+        params_t = tf.constant(params)
+        returns_t = tf.constant(returns)
+        advantages_t = tf.constant(advantages)
+        old_log_probs_t = tf.constant(log_probs)
+
+        n_minibatches = max(1, n // MINIBATCH_SIZE)
+        total_actor_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy_loss = 0.0
+
+        opt = self.brain.model.optimizer
+
+        for _ in range(PPO_EPOCHS):
+            indices = np.random.permutation(n)
+            for mb in range(n_minibatches):
+                batch = indices[mb * MINIBATCH_SIZE:(mb + 1) * MINIBATCH_SIZE]
+
+                s_batch = tf.gather(states_t, batch)
+                a_batch = tf.gather(actions_t, batch)
+                p_batch = tf.gather(params_t, batch)
+                r_batch = tf.gather(returns_t, batch)
+                adv_batch = tf.gather(advantages_t, batch)
+                old_lp_batch = tf.gather(old_log_probs_t, batch)
+
+                with tf.GradientTape() as tape:
+                    outputs = self.brain.model(s_batch, training=True)
+                    new_probs = outputs["action_probs"]
+                    new_params = outputs["action_params"]
+                    new_values = tf.squeeze(outputs["value"], axis=-1)
+
+                    action_mask = tf.one_hot(a_batch, N_ACTIONS)
+                    selected_new_probs = tf.reduce_sum(new_probs * action_mask, axis=1)
+                    new_log_probs = tf.math.log(selected_new_probs + 1e-10)
+
+                    ratio = tf.exp(new_log_probs - old_lp_batch)
+                    clipped_ratio = tf.clip_by_value(
+                        ratio, 1.0 - CLIP_EPSILON, 1.0 + CLIP_EPSILON
+                    )
+                    actor_loss = -tf.reduce_mean(
+                        tf.minimum(ratio * adv_batch, clipped_ratio * adv_batch)
+                    )
+
+                    value_loss = tf.reduce_mean(tf.square(new_values - r_batch))
+                    param_loss = tf.reduce_mean(
+                        tf.keras.losses.mse(p_batch, new_params)
+                    )
+
+                    entropy = -tf.reduce_sum(
+                        new_probs * tf.math.log(new_probs + 1e-10), axis=1
+                    )
+                    entropy_loss = -tf.reduce_mean(entropy)
+
+                    total_loss = (
+                        actor_loss
+                        + VALUE_COEF * value_loss
+                        + LAMBDA_REGRESSION * param_loss
+                        + ENTROPY_COEF * entropy_loss
+                    )
+
+                grads = tape.gradient(total_loss, self.brain.model.trainable_variables)
+                if MAX_GRAD_NORM > 0:
+                    grads, _ = tf.clip_by_global_norm(grads, MAX_GRAD_NORM)
+                opt.apply_gradients(zip(grads, self.brain.model.trainable_variables))
+
+                total_actor_loss += float(actor_loss)
+                total_value_loss += float(value_loss)
+                total_entropy_loss += float(entropy_loss)
+
+        avg_actor = total_actor_loss / (PPO_EPOCHS * n_minibatches)
+        avg_value = total_value_loss / (PPO_EPOCHS * n_minibatches)
+        avg_entropy = total_entropy_loss / (PPO_EPOCHS * n_minibatches)
+
+        logger.debug(
+            f"[PPOTrainer] train n={n} | "
+            f"actor={avg_actor:.4f} value={avg_value:.4f} "
+            f"entropy={avg_entropy:.4f}"
+        )
+
+        self.brain.decay_epsilon()
+        self.trajectory.clear()
+
+    @staticmethod
+    def _compute_gae(rewards, dones, values, gamma=GAMMA, lam=GAE_LAMBDA):
+        n = len(rewards)
+        advantages = np.zeros(n, dtype=np.float32)
+        gae = 0.0
+        for t in reversed(range(n)):
+            if t == n - 1:
+                next_val = 0.0 if dones[t] else values[t]
+            else:
+                next_val = values[t + 1]
+            delta = rewards[t] + gamma * next_val * (1 - dones[t]) - values[t]
+            gae = delta + gamma * lam * (1 - dones[t]) * gae
+            advantages[t] = gae
+        returns = advantages + np.array(values)
+        return returns.astype(np.float32)
