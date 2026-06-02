@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, host, port, team_name, unum):
+    def __init__(self, host, port, team_name, unum, training=False):
         self.host = host
         self.port = port
         self.team_name = team_name
         self.unum = unum
+        self._training = training
 
         self.client = RCSSClient(host, port)
         self.perception = Perception(team_name=team_name)
@@ -34,7 +35,9 @@ class Agent:
         self._side = None
         self._initial_positioned = False
         self._view_set = False
-        self._fsm = None
+        self._controller = None
+        self._brain = None
+        self._trainer = None
         self._last_pm = None
         self._prev_ball_pos = None
         self._prev_ball_vel = (0.0, 0.0)
@@ -195,11 +198,44 @@ class Agent:
                 return actuators.turn(0)
             return actuators.turn(2)
 
-        if self._fsm is None:
-            self._fsm = HybridFSM(self.perception, self._role, unum, self._side)
-        cmd = self._fsm.step(pressing=pressing)
+        if self._controller is None:
+            self._init_ml(unum)
+            fsm = HybridFSM(self.perception, self._role, unum, self._side)
+            from tactics.hybrid_controller import HybridController
+            self._controller = HybridController(
+                fsm=fsm,
+                perception=self.perception,
+                role=self._role,
+                unum=unum,
+                side=self._side,
+                brain=self._brain,
+                trainer=self._trainer,
+            )
+
+        cmd = self._controller.decide(pressing=pressing)
 
         if pm in (PlayMode.TIME_OVER, PlayMode.HALF_TIME):
             return None
 
         return cmd if cmd is not None else actuators.turn(3)
+
+    def _init_ml(self, unum):
+        if not self._training:
+            return
+        try:
+            from ml.model_v2 import AgentBrainV2
+            self._brain = AgentBrainV2(self._role, training=True)
+
+            from ml.reward_shaping import AdvancedReward
+            reward_calc = AdvancedReward(self.perception, self._role, unum)
+
+            from ml.ppo_trainer import PPOTrainer
+            self._trainer = PPOTrainer(self._brain, reward_calc)
+
+            import os
+            os.makedirs("ml/weights", exist_ok=True)
+            logger.info(f"[{unum}] ML iniciado (training mode) role={self._role}")
+        except Exception as e:
+            logger.warning(f"[{unum}] No se pudo inicializar ML: {e}")
+            self._brain = None
+            self._trainer = None

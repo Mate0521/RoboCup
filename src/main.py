@@ -13,10 +13,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def launch_agent(host: str, port: int, team_name: str, unum: int):
+def launch_agent(host: str, port: int, team_name: str, unum: int, training: bool = False):
     while True:
         try:
-            agent = Agent(host, port, team_name, unum)
+            agent = Agent(host, port, team_name, unum, training=training)
             agent.run()
         except Exception as e:
             logger.error(f"[Agente {unum}] Error inesperado: {e}")
@@ -38,14 +38,14 @@ def main():
 
     training = os.getenv("TRAINING", "false").lower() == "true"
     if training:
-        logger.info("MODO ENTRENAMIENTO ACTIVADO")
+        logger.info("MODO ENTRENAMIENTO ACTIVADO - HybridController con ML habilitado")
 
     threads = []
     for unum in range(1, num_agents + 1):
         time.sleep(0.15)
         t = threading.Thread(
             target=launch_agent,
-            args=(host, port, team_name, unum),
+            args=(host, port, team_name, unum, training),
             daemon=True,
             name=f"agente-{unum}",
         )
