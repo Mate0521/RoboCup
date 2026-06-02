@@ -40,6 +40,7 @@ class Agent:
         self._prev_ball_vel = (0.0, 0.0)
         self._lost_ball_count = 0
         self._had_ball_last = False
+        self._cycles_in_before_kickoff = 0
 
     def connect(self):
         logger.info(f"[{self.unum}] Conectando...")
@@ -67,10 +68,14 @@ class Agent:
         try:
             while self._running:
                 has_sense = False
+                timeouts = 0
                 for _ in range(30):
                     msg = self.client.receive()
                     if msg is None:
-                        break
+                        timeouts += 1
+                        if timeouts >= 5:
+                            break
+                        continue
                     parsed = parse(msg)
                     self.perception.update(parsed)
                     t = parsed["type"]
@@ -178,12 +183,16 @@ class Agent:
         pressing = 1 <= self._lost_ball_count <= 20
 
         if pm == PlayMode.BEFORE_KICK_OFF:
+            self._cycles_in_before_kickoff += 1
             if not self._initial_positioned and unum > 0:
                 self._initial_positioned = True
                 tx, ty = get_tactical_position(unum, self._side, "base")
                 tx, ty = clamp_to_zone(tx, ty, unum, self._side)
                 logger.info(f"[{unum}] Pos: ({tx:.1f}, {ty:.1f})")
                 return actuators.move(tx, ty)
+            if self._cycles_in_before_kickoff > 600:
+                logger.warning(f"[{unum}] Forzando inicio tras {self._cycles_in_before_kickoff} ciclos")
+                return actuators.turn(0)
             return actuators.turn(2)
 
         if self._fsm is None:
