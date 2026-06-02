@@ -128,6 +128,80 @@ class Blackboard:
             old_side = self.ball["last_touch_team"]
             return old_side == my_side and old_side != self.ball.get("_prev_team")
 
+    def get_all_agents_positions(self):
+        with self._data_lock:
+            result = []
+            for unum, data in self.agent_positions.items():
+                px, py = data["pos"]
+                if px is not None:
+                    result.append({"unum": unum, "x": px, "y": py, "role": data.get("role", "")})
+            return result
+
+    def get_all_opponents_positions(self):
+        with self._data_lock:
+            result = []
+            for oid, data in self.opponent_positions.items():
+                px, py = data["pos"]
+                if px is not None:
+                    result.append({"id": oid, "x": px, "y": py})
+            return result
+
+    def get_agent_position(self, unum):
+        with self._data_lock:
+            data = self.agent_positions.get(unum)
+            if data:
+                return data["pos"]
+            return (None, None)
+
+    def am_i_nearest_to_ball(self, unum):
+        with self._data_lock:
+            bx, by = self.ball["pos"]
+            if bx is None:
+                return True
+            my_pos = self.agent_positions.get(unum, {}).get("pos")
+            if not my_pos or my_pos[0] is None:
+                return True
+            my_dist = math.hypot(my_pos[0] - bx, my_pos[1] - by)
+            for other_unum, data in self.agent_positions.items():
+                if other_unum == unum:
+                    continue
+                opx, opy = data["pos"]
+                if opx is None:
+                    continue
+                other_dist = math.hypot(opx - bx, opy - by)
+                if other_dist < my_dist:
+                    return False
+            return True
+
+    def get_nearest_opponent_to_ball(self):
+        with self._data_lock:
+            bx, by = self.ball["pos"]
+            if bx is None:
+                return None
+            nearest = None
+            min_dist = float("inf")
+            for oid, data in self.opponent_positions.items():
+                ox, oy = data["pos"]
+                if ox is None:
+                    continue
+                d = math.hypot(ox - bx, oy - by)
+                if d < min_dist:
+                    min_dist = d
+                    nearest = {"id": oid, "pos": (ox, oy), "dist": d}
+            return nearest
+
+    def get_agents_in_range(self, center_pos, max_dist):
+        with self._data_lock:
+            cx, cy = center_pos
+            result = []
+            for unum, data in self.agent_positions.items():
+                px, py = data["pos"]
+                if px is not None:
+                    d = math.hypot(px - cx, py - cy)
+                    if d <= max_dist:
+                        result.append({"unum": unum, "pos": (px, py), "dist": d})
+            return result
+
     def cycle_step(self):
         with self._data_lock:
             self.cycle += 1

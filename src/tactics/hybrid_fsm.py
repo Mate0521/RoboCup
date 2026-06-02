@@ -6,20 +6,27 @@ from modules import actuators
 from modules.perception import PlayMode
 from modules.role_assignment import get_tactical_position, clamp_to_zone
 from util.field_constants import GOAL_L_X, GOAL_R_X, KICKABLE_MARGIN
+from coordination.blackboard import Blackboard
 
 logger = logging.getLogger(__name__)
 
 TURN_SPEED = 15.0
-DASH_POWER = 70
+DASH_POWER = 75
 NEAR_THRESHOLD = 1.5
+PRESS_DURATION_MAX = 15
 
 
 class State(Enum):
-    SEARCH = "search"
-    CHASE = "chase"
-    KICK = "kick"
-    POSITION = "position"
-    DEAD = "dead"
+    WAIT = 0
+    SEARCH_BALL = 1
+    MOVE_TO_BALL = 2
+    KICK_BALL = 3
+    GO_TO_POSITION = 4
+    DEAD_BALL = 5
+    SUPPORT = 6
+    PRESS = 7
+    DRIBBLE = 8
+    COVER_LANE = 9
 
 
 class HybridFSM:
@@ -28,15 +35,22 @@ class HybridFSM:
         self.role = role
         self.unum = unum
         self.side = side
-        self.state = State.POSITION
+        self.state = State.GO_TO_POSITION
+        self._last_state = None
+        self._state_duration = 0
         self._search_accum = 0.0
         self._search_dir = 1 if unum % 2 == 0 else -1
         self._last_cmd = "turn 0"
+        self._press_cycles = 0
 
     def step(self, pressing=False):
         pm = self.perception.state.play_mode
 
-        if pm in (PlayMode.TIME_OVER, PlayMode.HALF_TIME, PlayMode.BEFORE_KICK_OFF):
+        if pm in (PlayMode.TIME_OVER, PlayMode.HALF_TIME):
+            return None
+
+        if pm == PlayMode.BEFORE_KICK_OFF:
+            self.state = State.WAIT
             return None
 
         if self.role == "goalkeeper":
@@ -56,12 +70,20 @@ class HybridFSM:
 
         return self._play(pressing)
 
+    def _transition_to(self, new_state):
+        if self.state != new_state:
+            self._last_state = self.state
+            self.state = new_state
+            self._state_duration = 0
+        else:
+            self._state_duration += 1
+
     def _gk(self):
         state = self.perception.state
         gx = GOAL_L_X + 2 if self.side == "l" else GOAL_R_X - 2
 
         if self.perception.is_ball_kickable():
-            self.state = State.KICK
+            self._transition_to(State.KICK_BALL)
             return self._pass_or_clear()
 
         bd = state.ball_distance
@@ -73,7 +95,7 @@ class HybridFSM:
         if bd is not None and bd < 20 and abs(ba or 0) < 30:
             return actuators.catch(ba or 0)
 
-        self.state = State.POSITION
+        self._transition_to(State.GO_TO_POSITION)
         return self._navigate(gx, 0)
 
     def _play(self, pressing=False):
@@ -81,32 +103,206 @@ class HybridFSM:
         perc = self.perception
 
         if perc.is_ball_kickable():
-            self.state = State.KICK
-            return self._pass_to_teammate()
+            return self._handle_kick_ball()
 
         bd = state.ball_distance
         radius = self._role_radius()
         if pressing:
             radius *= 1.6
 
-        if bd is not None and bd < radius:
-            self.state = State.CHASE
-            return self._chase_ball()
+        if pressing and bd is not None and bd < radius * 1.5:
+            return self._handle_press()
 
         sx, sy = state.self_x, state.self_y
-        if sx is not None and bd is not None and bd < radius * 1.2:
-            self.state = State.CHASE
-            return self._chase_ball()
+        if bd is not None and bd < radius:
+            return self._handle_chase()
 
-        self.state = State.POSITION
-        return self._go_position()
+        if sx is not None and bd is not None and bd < radius * 1.2:
+            return self._handle_chase()
+
+        bb = Blackboard()
+        ball_owner = bb.get_ball_owner()
+        if ball_owner and ball_owner != self.unum:
+            return self._handle_support()
+
+        return self._handle_go_to_position()
+
+    def _handle_kick_ball(self):
+        self._transition_to(State.KICK_BALL)
+        state = self.perception.state
+
+        from tactics.pass_evaluation import PassEvaluator
+        bb = Blackboard()
+        teammates = bb.get_all_agents_positions()
+        opponents = bb.get_all_opponents_positions()
+
+        if not opponents:
+            opponents = [{"x": o.get("x", 0), "y": o.get("y", 0)} for o in state.opponents]
+        if not teammates:
+            teammates = []
+
+        sx, sy = state.self_x, state.self_y
+        if sx is not None and opponents:
+            evaluator = PassEvaluator()
+            best_pass = evaluator.evaluate(
+                (sx, sy), self.side, teammates, opponents
+            )
+            if best_pass and best_pass.score > 0.6:
+                angle = math.degrees(math.atan2(
+                    best_pass.target_y - sy, best_pass.target_x - sx
+                ))
+                target_angle = angle - state.body_direction
+                while target_angle > 180: target_angle -= 360
+                while target_angle < -180: target_angle += 360
+                power = min(60, max(15, best_pass.distance * 2.5))
+                logger.info(f"[{self.unum}] PASE EVALUADO → #{best_pass.receiver_unum} "
+                            f"score={best_pass.score:.2f} risk={best_pass.risk:.2f}")
+                self._transition_to(State.SUPPORT)
+                return actuators.kick(power, target_angle)
+
+        return self._pass_to_teammate()
+
+    def _handle_chase(self):
+        self._transition_to(State.MOVE_TO_BALL)
+        state = self.perception.state
+        ba = state.ball_angle
+        bd = state.ball_distance
+
+        if ba is None:
+            self._transition_to(State.SEARCH_BALL)
+            return self._search_ball()
+
+        if abs(ba) > 6:
+            turn = max(-15, min(15, ba * 0.4))
+            return actuators.turn(turn)
+
+        if bd is not None and bd < 3:
+            return actuators.dash(40)
+
+        return actuators.dash(DASH_POWER)
+
+    def _handle_support(self):
+        self._transition_to(State.SUPPORT)
+        bb = Blackboard()
+        ball_owner = bb.get_ball_owner()
+        ball_pos = bb.ball.get("pos")
+        state = self.perception.state
+
+        if ball_pos is None or not ball_pos[0]:
+            return self._handle_go_to_position()
+
+        sx, sy = state.self_x, state.self_y
+        if sx is None:
+            return self._search_ball()
+
+        dist_to_owner = math.hypot(sx - ball_pos[0], sy - ball_pos[1])
+
+        if dist_to_owner < 5:
+            offset_angle = math.radians(60) * (1 if self.unum % 2 == 0 else -1)
+            tx = ball_pos[0] + 10 * math.cos(offset_angle)
+            ty = ball_pos[1] + 10 * math.sin(offset_angle)
+            return self._navigate(tx, ty)
+
+        if 5 <= dist_to_owner <= 15:
+            return self._navigate(ball_pos[0], ball_pos[1])
+
+        tx, ty = self._calculate_support_position(ball_pos)
+        return self._navigate(tx, ty)
+
+    def _handle_press(self):
+        self._press_cycles += 1
+        self._transition_to(State.PRESS)
+
+        if self._press_cycles > PRESS_DURATION_MAX:
+            self._press_cycles = 0
+            return self._handle_go_to_position()
+
+        state = self.perception.state
+        bd = state.ball_distance
+        ba = state.ball_angle
+
+        if ba is None:
+            return self._search_ball()
+
+        bb = Blackboard()
+        if not bb.am_i_nearest_to_ball(self.unum):
+            self._press_cycles = 0
+            return self._handle_cover_lane()
+
+        if bd is not None and bd < 5:
+            if abs(ba or 0) > 6:
+                turn = max(-15, min(15, (ba or 0) * 0.4))
+                return actuators.turn(turn)
+            return actuators.dash(60)
+
+        if abs(ba or 0) > 10:
+            turn = max(-15, min(15, (ba or 0) * 0.5))
+            return actuators.turn(turn)
+
+        return actuators.dash(DASH_POWER + 25)
+
+    def _handle_cover_lane(self):
+        self._transition_to(State.COVER_LANE)
+        bb = Blackboard()
+        ball_pos = bb.ball.get("pos")
+        state = self.perception.state
+        sx, sy = state.self_x, state.self_y
+
+        if ball_pos is None or sx is None:
+            return self._search_ball()
+
+        nearest_opponent = bb.get_nearest_opponent_to_ball()
+        if nearest_opponent:
+            ox, oy = nearest_opponent["pos"]
+            cx = (ball_pos[0] + ox) / 2
+            cy = (ball_pos[1] + oy) / 2
+            return self._navigate(cx, cy)
+
+        return self._handle_go_to_position()
+
+    def _handle_go_to_position(self):
+        self._transition_to(State.GO_TO_POSITION)
+        sit = "defensive" if self.role == "defender" else \
+              "offensive" if self.role == "forward" else "base"
+        tx, ty = get_tactical_position(self.unum, self.side, sit)
+        tx, ty = clamp_to_zone(tx, ty, self.unum, self.side)
+
+        state = self.perception.state
+        sx, sy = state.self_x, state.self_y
+        if sx is not None:
+            d = math.hypot(tx - sx, ty - sy)
+            if d < NEAR_THRESHOLD:
+                return actuators.turn(2)
+
+        return self._navigate(tx, ty)
+
+    def _calculate_support_position(self, ball_pos):
+        state = self.perception.state
+        sx, sy = state.self_x, state.self_y
+        if sx is None:
+            return (ball_pos[0] + 10, ball_pos[1])
+
+        dx = sx - ball_pos[0]
+        dy = sy - ball_pos[1]
+        dist = math.hypot(dx, dy)
+
+        if dist < 0.01:
+            return (ball_pos[0] + 10, ball_pos[1] + 5 * (1 if self.unum % 2 == 0 else -1))
+
+        desired_dist = 12
+        ratio = desired_dist / dist
+        tx = ball_pos[0] + dx * ratio
+        ty = ball_pos[1] + dy * ratio
+
+        tx = max(-52.5, min(52.5, tx))
+        ty = max(-34, min(34, ty))
+        return (tx, ty)
 
     def _pass_to_teammate(self):
         state = self.perception.state
 
         if not state.teammates:
-            fwd = 0 if self.side == "l" else 180
-            return actuators.kick(30, fwd)
+            return self._dribble_forward()
 
         team = []
         for t in state.teammates:
@@ -134,8 +330,13 @@ class HybridFSM:
             logger.info(f"[{self.unum}] PASE ({td:.0f}m)")
             return actuators.kick(power, ta)
 
+        return self._dribble_forward()
+
+    def _dribble_forward(self):
+        self._transition_to(State.DRIBBLE)
         fwd = 0 if self.side == "l" else 180
-        return actuators.kick(20, fwd)
+        logger.info(f"[{self.unum}] DRIBBLE hacia adelante")
+        return actuators.kick(15, fwd)
 
     def _pass_or_clear(self):
         state = self.perception.state
@@ -144,40 +345,7 @@ class HybridFSM:
             if 5 < td < 25:
                 ta = t.get("angle", 0)
                 return actuators.kick(min(50, td * 3), ta)
-        fwd = 0 if self.side == "l" else 180
-        return actuators.kick(40, fwd)
-
-    def _chase_ball(self):
-        state = self.perception.state
-        ba = state.ball_angle
-        bd = state.ball_distance
-
-        if ba is None:
-            return self._search_ball()
-
-        if abs(ba) > 6:
-            turn = max(-15, min(15, ba * 0.4))
-            return actuators.turn(turn)
-
-        if bd is not None and bd < 3:
-            return actuators.dash(40)
-
-        return actuators.dash(DASH_POWER)
-
-    def _go_position(self):
-        sit = "defensive" if self.role == "defender" else \
-              "offensive" if self.role == "forward" else "base"
-        tx, ty = get_tactical_position(self.unum, self.side, sit)
-        tx, ty = clamp_to_zone(tx, ty, self.unum, self.side)
-
-        state = self.perception.state
-        sx, sy = state.self_x, state.self_y
-        if sx is not None:
-            d = math.hypot(tx - sx, ty - sy)
-            if d < NEAR_THRESHOLD:
-                return actuators.turn(2)
-
-        return self._navigate(tx, ty)
+        return self._dribble_forward()
 
     def _go_dead_position(self):
         sit = "set_attack" if self.role in ("forward", "midfielder") else "set_defense"
