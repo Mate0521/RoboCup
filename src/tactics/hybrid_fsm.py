@@ -238,7 +238,7 @@ class HybridFSM:
             return actuators.dash(DASH_POWER)
 
         if bd < 0.7:
-            return actuators.turn(1)
+            return actuators.dash(6)
 
         if bd < 1.5:
             return actuators.dash(8)
@@ -410,7 +410,7 @@ class HybridFSM:
             if shot is not None:
                 return shot
         fwd = 0 if self.side == "l" else 180
-        return actuators.kick(5, fwd)
+        return actuators.dash(12)
 
     def _pass_or_clear(self):
         state = self.perception.state

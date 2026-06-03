@@ -65,12 +65,18 @@ class HybridController:
                 score_diff = self._get_score_diff()
                 action_idx, params, value, log_prob = self.brain.predict_with_log_prob(state_vec)
 
+                if self.perception.is_ball_kickable() and action_idx in (3, 4, 5):
+                    return None
+
                 cmd = self.brain.action_to_command(action_idx, params, self.side)
                 if cmd is not None and self._is_action_safe(action_idx, params):
                     self.trainer.store_experience(state_vec, score_diff, action_idx, params, value, log_prob)
                     return cmd
             elif self.brain:
                 action_idx, params, _ = self.brain.predict(state_vec)
+
+                if self.perception.is_ball_kickable() and action_idx in (3, 4, 5):
+                    return None
 
                 cmd = self.brain.action_to_command(action_idx, params, self.side)
                 if cmd is not None and self._is_action_safe(action_idx, params):
