@@ -121,7 +121,7 @@ class HybridFSM:
         bb = Blackboard()
 
         if bd is not None and bd < chase_radius:
-            if self._is_ball_in_my_zone() or bb.am_i_nearest_to_ball(self.unum):
+            if bb.am_i_nearest_to_ball(self.unum):
                 return self._handle_chase()
             else:
                 return self._handle_support()
@@ -239,6 +239,15 @@ class HybridFSM:
 
         if bd is None:
             return actuators.dash(DASH_POWER)
+
+        teammates_near = 0
+        for t in state.teammates:
+            td = t.get("distance", 99)
+            if td < 4:
+                teammates_near += 1
+        
+        if teammates_near >= 2 and bd < 3.0:
+            return actuators.dash(max(5, bd * 2))
 
         if bd < 0.7:
             return actuators.dash(6)
@@ -459,7 +468,12 @@ class HybridFSM:
             return actuators.kick(50, fwd)
         bd = state.ball_distance
         ba = state.ball_angle
+        
+        bb = Blackboard()
         if bd is not None and bd < 15:
+            if not bb.am_i_nearest_to_ball(self.unum):
+                return self._go_dead_position()
+            
             if abs(ba or 0) > 8:
                 return actuators.turn((ba or 0) * 0.4)
             return actuators.dash(40)
@@ -502,6 +516,32 @@ class HybridFSM:
         power = max(20, min(90, dist * 3.0))
         return actuators.dash(power)
 
+    def _am_i_second_nearest(self, bb, my_dist):
+        """Verifica si soy el segundo más cercano al balón."""
+        positions = bb.get_all_agents_positions()
+        if len(positions) < 2:
+            return False
+        
+        ball_pos = bb.ball.get("pos")
+        if not ball_pos or ball_pos[0] is None:
+            return False
+        
+        distances = []
+        for p in positions:
+            if p.get("unum") == self.unum:
+                continue
+            px, py = p.get("x", 0), p.get("y", 0)
+            if px is None:
+                continue
+            dist = math.hypot(ball_pos[0] - px, ball_pos[1] - py)
+            distances.append(dist)
+        
+        if not distances:
+            return True
+        
+        min_other = min(distances)
+        return my_dist < min_other or abs(my_dist - min_other) < 2
+    
     def _is_ball_in_my_zone(self):
         """Determina si el balón está en mi zona de responsabilidad."""
         bb = Blackboard()

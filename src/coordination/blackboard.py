@@ -169,7 +169,9 @@ class Blackboard:
                 if opx is None:
                     continue
                 other_dist = math.hypot(opx - bx, opy - by)
-                if other_dist < my_dist:
+                if other_dist < my_dist - 0.5:
+                    return False
+                if abs(other_dist - my_dist) < 0.5 and other_unum < unum:
                     return False
             return True
 
