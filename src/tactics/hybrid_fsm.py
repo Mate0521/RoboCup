@@ -106,6 +106,7 @@ class HybridFSM:
         perc = self.perception
 
         if perc.is_ball_kickable():
+            logger.info(f"[{self.unum}] ⚽ Balón KICKABLE bd={state.ball_distance:.2f}")
             return self._handle_kick_ball()
 
         bd = state.ball_distance
@@ -121,25 +122,33 @@ class HybridFSM:
         bb = Blackboard()
 
         if bd is not None and bd < chase_radius:
+            my_pos = bb.agent_positions.get(self.unum, {}).get("pos")
+            ball_pos = bb.ball.get("pos")
+            
+            if not my_pos or not ball_pos or my_pos[0] is None or ball_pos[0] is None:
+                logger.warning(f"[{self.unum}] ⚠️ Sin posición, persigo por defecto")
+                return self._handle_chase()
+            
             chasers = 0
+            total_agents = 0
             for other_unum, data in bb.agent_positions.items():
                 if other_unum == self.unum:
                     continue
                 opos = data.get("pos")
                 if not opos or opos[0] is None:
                     continue
-                ball_pos = bb.ball.get("pos")
-                if not ball_pos or ball_pos[0] is None:
-                    continue
+                total_agents += 1
                 other_bd = math.hypot(opos[0] - ball_pos[0], opos[1] - ball_pos[1])
-                if other_bd < bd:
+                if other_bd < bd - 0.5:
                     chasers += 1
             
-            if chasers < 2 or bd < 5:
-                logger.debug(f"[{self.unum}] → CHASE bd={bd:.1f}")
+            logger.debug(f"[{self.unum}] bd={bd:.1f} chasers={chasers} total={total_agents}")
+            
+            if chasers == 0 or (chasers == 1 and bd < 8) or bd < 3:
+                logger.info(f"[{self.unum}] 🏃 CHASE")
                 return self._handle_chase()
             else:
-                logger.debug(f"[{self.unum}] → SUPPORT bd={bd:.1f}")
+                logger.info(f"[{self.unum}] 🤝 SUPPORT")
                 return self._handle_support()
         ball_owner = bb.get_ball_owner()
         ball_pos = bb.ball.get("pos")
@@ -223,21 +232,29 @@ class HybridFSM:
 
         if abs(ba) > 10:
             turn = max(-20, min(20, ba * 0.4))
+            logger.debug(f"[{self.unum}] Chase turn ba={ba:.1f}")
             return actuators.turn(turn)
 
         if bd is None:
             return actuators.dash(DASH_POWER)
 
-        if bd < 0.7:
-            return actuators.dash(5)
+        if bd <= 0.7:
+            logger.warning(f"[{self.unum}] ⚠️ Chase en kickable range bd={bd:.2f}, debería estar en KICK_BALL")
+            return actuators.dash(10)
 
         if bd < 2.0:
-            return actuators.dash(min(20, max(8, bd * 8)))
+            power = min(25, max(10, bd * 10))
+            logger.debug(f"[{self.unum}] Chase close bd={bd:.2f} dash={power:.0f}")
+            return actuators.dash(power)
 
         if bd < 5.0:
-            return actuators.dash(min(40, max(15, bd * 6)))
+            power = min(50, max(20, bd * 8))
+            logger.debug(f"[{self.unum}] Chase mid bd={bd:.2f} dash={power:.0f}")
+            return actuators.dash(power)
 
-        return actuators.dash(min(70, max(30, bd * 8)))
+        power = min(80, max(40, bd * 10))
+        logger.debug(f"[{self.unum}] Chase far bd={bd:.2f} dash={power:.0f}")
+        return actuators.dash(power)
 
     def _handle_support(self):
         self._transition_to(State.SUPPORT)
@@ -440,7 +457,8 @@ class HybridFSM:
             if shot is not None:
                 return shot
         fwd = 0 if self.side == "l" else 180
-        return actuators.dash(12)
+        logger.info(f"[{self.unum}] 🏃 DRIBBLE kick hacia adelante")
+        return actuators.kick(10, fwd)
 
     def _pass_or_clear(self):
         state = self.perception.state
