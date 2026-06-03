@@ -121,9 +121,7 @@ class HybridFSM:
         bb = Blackboard()
 
         if bd is not None and bd < chase_radius:
-            am_nearest = bb.am_i_nearest_to_ball(self.unum)
-            
-            num_agents_closer = 0
+            chasers = 0
             for other_unum, data in bb.agent_positions.items():
                 if other_unum == self.unum:
                     continue
@@ -134,14 +132,14 @@ class HybridFSM:
                 if not ball_pos or ball_pos[0] is None:
                     continue
                 other_bd = math.hypot(opos[0] - ball_pos[0], opos[1] - ball_pos[1])
-                if other_bd < bd - 1.5:
-                    num_agents_closer += 1
+                if other_bd < bd:
+                    chasers += 1
             
-            if am_nearest or num_agents_closer == 0 or bd < 4:
-                logger.debug(f"[{self.unum}] → CHASE bd={bd:.1f} nearest={am_nearest} closer={num_agents_closer}")
+            if chasers < 2 or bd < 5:
+                logger.debug(f"[{self.unum}] → CHASE bd={bd:.1f}")
                 return self._handle_chase()
             else:
-                logger.debug(f"[{self.unum}] → SUPPORT bd={bd:.1f} closer={num_agents_closer}")
+                logger.debug(f"[{self.unum}] → SUPPORT bd={bd:.1f}")
                 return self._handle_support()
         ball_owner = bb.get_ball_owner()
         ball_pos = bb.ball.get("pos")
@@ -192,34 +190,6 @@ class HybridFSM:
             if shot is not None:
                 return shot
 
-        from tactics.pass_evaluation import PassEvaluator
-        bb = Blackboard()
-        teammates = bb.get_all_agents_positions()
-        opponents = bb.get_all_opponents_positions()
-
-        if not opponents:
-            opponents = [{"x": o.get("x", 0), "y": o.get("y", 0)} for o in state.opponents]
-        if not teammates:
-            teammates = []
-
-        if sx is not None and opponents:
-            evaluator = PassEvaluator()
-            best_pass = evaluator.evaluate(
-                (sx, sy), self.side, teammates, opponents
-            )
-            if best_pass and best_pass.score > 0.6:
-                angle = math.degrees(math.atan2(
-                    best_pass.target_y - sy, best_pass.target_x - sx
-                ))
-                target_angle = angle - state.body_direction
-                while target_angle > 180: target_angle -= 360
-                while target_angle < -180: target_angle += 360
-                power = min(60, max(15, best_pass.distance * 2.5))
-                logger.info(f"[{self.unum}] PASE EVALUADO → #{best_pass.receiver_unum} "
-                            f"score={best_pass.score:.2f} risk={best_pass.risk:.2f}")
-                self._transition_to(State.SUPPORT)
-                return actuators.kick(power, target_angle)
-
         return self._pass_to_teammate()
 
     def _shoot_on_goal(self, sx, sy):
@@ -249,47 +219,25 @@ class HybridFSM:
         bd = state.ball_distance
 
         if ba is None:
-            logger.debug(f"[{self.unum}] Chase: ba=None, buscando")
             return self._search_ball()
 
-        if abs(ba) > 8:
-            turn = max(-20, min(20, ba * 0.35))
-            logger.debug(f"[{self.unum}] Chase: girando ba={ba:.1f}")
+        if abs(ba) > 10:
+            turn = max(-20, min(20, ba * 0.4))
             return actuators.turn(turn)
 
         if bd is None:
-            logger.debug(f"[{self.unum}] Chase: bd=None, dash full")
             return actuators.dash(DASH_POWER)
 
-        teammates_near = 0
-        for t in state.teammates:
-            td = t.get("distance", 99)
-            if td < 4:
-                teammates_near += 1
-        
-        if teammates_near >= 2 and bd < 3.0:
-            power = max(5, bd * 2)
-            logger.debug(f"[{self.unum}] Chase: freno (team={teammates_near}) dash={power:.1f}")
-            return actuators.dash(power)
-
         if bd < 0.7:
-            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} muy cerca, dash(6)")
-            return actuators.dash(6)
+            return actuators.dash(5)
 
-        if bd < 1.5:
-            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(8)")
-            return actuators.dash(8)
+        if bd < 2.0:
+            return actuators.dash(min(20, max(8, bd * 8)))
 
-        if bd < 3.0:
-            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(20)")
-            return actuators.dash(20)
+        if bd < 5.0:
+            return actuators.dash(min(40, max(15, bd * 6)))
 
-        if bd < 6.0:
-            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(45)")
-            return actuators.dash(45)
-
-        logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(75)")
-        return actuators.dash(DASH_POWER)
+        return actuators.dash(min(70, max(30, bd * 8)))
 
     def _handle_support(self):
         self._transition_to(State.SUPPORT)
@@ -305,32 +253,34 @@ class HybridFSM:
         if sx is None:
             return self._search_ball()
 
-        if self.role == "forward":
-            goal_x = GOAL_R_X if self.side == "l" else GOAL_L_X
-            in_attack = (self.side == "l" and ball_pos[0] > 10) or (self.side == "r" and ball_pos[0] < -10)
-            if in_attack:
-                tx = ball_pos[0] + (goal_x - ball_pos[0]) * 0.5
-                ty = ball_pos[1] * 0.4 + (10 if self.unum % 2 == 0 else -10)
-                return self._navigate(tx, ty)
+        goal_x = GOAL_R_X if self.side == "l" else GOAL_L_X
+        to_goal_x = goal_x - ball_pos[0]
+        to_goal_y = 0 - ball_pos[1]
+        dist_to_goal = math.hypot(to_goal_x, to_goal_y)
         
-        if self.role == "midfielder":
-            in_attack = (self.side == "l" and ball_pos[0] > 0) or (self.side == "r" and ball_pos[0] < 0)
-            if in_attack:
-                lateral_offset = 12 if self.unum % 2 == 0 else -12
-                tx = ball_pos[0] + 8
-                ty = ball_pos[1] + lateral_offset
-                return self._navigate(tx, ty)
+        if dist_to_goal > 0:
+            forward_dir_x = to_goal_x / dist_to_goal
+            forward_dir_y = to_goal_y / dist_to_goal
+        else:
+            forward_dir_x = 1 if self.side == "l" else -1
+            forward_dir_y = 0
 
-        support_spread = {"defender": 15, "midfielder": 10, "forward": 7, "goalkeeper": 25}
-        spread = support_spread.get(self.role, 14)
-        role_angle_offset = {"defender": 0, "midfielder": 30, "forward": 60}
-        base_angle = role_angle_offset.get(self.role, 30)
+        spread_base = 8 if self.role == "forward" else 12
+        angle_offset = (self.unum * 40) % 360
+        
+        if self.role == "forward":
+            tx = ball_pos[0] + forward_dir_x * 6 + forward_dir_y * (8 if self.unum % 2 == 0 else -8)
+            ty = ball_pos[1] + forward_dir_y * 6 + forward_dir_x * (8 if self.unum % 2 == 0 else -8)
+        elif self.role == "midfielder":
+            lateral = 10 if self.unum % 2 == 0 else -10
+            tx = ball_pos[0] + forward_dir_x * 5
+            ty = ball_pos[1] + lateral
+        else:
+            back_offset = -8 if self.side == "l" else 8
+            tx = ball_pos[0] + back_offset
+            ty = ball_pos[1] + (8 if self.unum % 2 == 0 else -8)
 
-        parity = 1 if self.unum % 2 == 0 else -1
-        offset_angle = math.radians(base_angle) * parity
-        tx = ball_pos[0] + spread * math.cos(offset_angle)
-        ty = ball_pos[1] + spread * math.sin(offset_angle)
-
+        logger.debug(f"[{self.unum}] SUPPORT → ({tx:.1f},{ty:.1f}) spread desde balón")
         return self._navigate(tx, ty)
 
     def _handle_press(self):
@@ -427,40 +377,58 @@ class HybridFSM:
         state = self.perception.state
 
         if not state.teammates:
+            logger.debug(f"[{self.unum}] Sin compañeros visibles, dribleo")
             return self._dribble_forward()
 
-        team = []
+        best_option = None
+        best_score = -999
+        
         for t in state.teammates:
             td = t.get("distance", 99)
             ta = t.get("angle", 0)
-            if td < 3 or td > 35:
+            
+            if td < 3 or td > 30:
                 continue
-            forward_bias = 1.0
-            if self.side == "l" and -45 <= ta <= 45:
-                forward_bias = 0.7
-            elif self.side == "r" and (ta <= -135 or ta >= 135):
-                forward_bias = 0.7
-            team.append((td * forward_bias, ta, td))
-
-        if team:
-            team.sort(key=lambda x: x[0])
-            for _, ta, td in team:
-                risk = 0
-                for o in state.opponents:
-                    od = o.get("distance", 99)
-                    if abs(od - td) < 4 and abs(o.get("angle", 0) - ta) < 25:
-                        risk += 1
-                if risk < 3:
-                    power = min(55, max(15, td * 3))
-                    logger.info(f"[{self.unum}] PASE a {td:.0f}m ⦣{ta:.0f}° riesgo={risk}")
-                    return actuators.kick(power, ta)
-
-        if team:
-            _, ta, td = team[0]
-            power = min(50, max(12, td * 2.8))
-            logger.info(f"[{self.unum}] PASE forzado {td:.0f}m")
+            
+            score = 0
+            
+            if self.side == "l" and -60 <= ta <= 60:
+                score += 5
+            elif self.side == "r" and (ta <= -120 or ta >= 120):
+                score += 5
+            
+            if 5 < td < 15:
+                score += 3
+            
+            opponents_near = 0
+            for o in state.opponents:
+                od = o.get("distance", 99)
+                oa = o.get("angle", 0)
+                if abs(od - td) < 3 and abs(oa - ta) < 20:
+                    opponents_near += 1
+            
+            score -= opponents_near * 2
+            
+            if score > best_score:
+                best_score = score
+                best_option = (td, ta)
+        
+        if best_option and best_score >= 0:
+            td, ta = best_option
+            power = min(60, max(15, td * 3))
+            logger.info(f"[{self.unum}] ⚽ PASE {td:.0f}m ∠{ta:.0f}° score={best_score}")
             return actuators.kick(power, ta)
 
+        if state.teammates:
+            t = state.teammates[0]
+            td = t.get("distance", 10)
+            ta = t.get("angle", 0)
+            if td < 25:
+                power = min(50, max(15, td * 2.5))
+                logger.info(f"[{self.unum}] PASE rápido {td:.0f}m")
+                return actuators.kick(power, ta)
+
+        logger.debug(f"[{self.unum}] Dribleo hacia adelante")
         return self._dribble_forward()
 
     def _dribble_forward(self):
@@ -551,32 +519,6 @@ class HybridFSM:
         power = max(20, min(90, dist * 3.0))
         return actuators.dash(power)
 
-    def _am_i_second_nearest(self, bb, my_dist):
-        """Verifica si soy el segundo más cercano al balón."""
-        positions = bb.get_all_agents_positions()
-        if len(positions) < 2:
-            return False
-        
-        ball_pos = bb.ball.get("pos")
-        if not ball_pos or ball_pos[0] is None:
-            return False
-        
-        distances = []
-        for p in positions:
-            if p.get("unum") == self.unum:
-                continue
-            px, py = p.get("x", 0), p.get("y", 0)
-            if px is None:
-                continue
-            dist = math.hypot(ball_pos[0] - px, ball_pos[1] - py)
-            distances.append(dist)
-        
-        if not distances:
-            return True
-        
-        min_other = min(distances)
-        return my_dist < min_other or abs(my_dist - min_other) < 2
-    
     def _is_ball_in_my_zone(self):
         """Determina si el balón está en mi zona de responsabilidad."""
         bb = Blackboard()
