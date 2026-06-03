@@ -20,20 +20,6 @@ LAMBDA_REGRESSION = 0.3
 WEIGHTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ml", "weights")
 
 
-def transformer_block(x, head_size=32, num_heads=4, ff_dim=64, dropout=0.15):
-    attn_output = keras.layers.MultiHeadAttention(
-        num_heads=num_heads, key_dim=head_size, dropout=dropout
-    )(x, x)
-    attn_output = keras.layers.Dropout(dropout)(attn_output)
-    out1 = keras.layers.LayerNormalization(epsilon=1e-6)(x + attn_output)
-
-    ffn = keras.layers.Dense(ff_dim, activation="relu")(out1)
-    ffn = keras.layers.Dropout(dropout)(ffn)
-    ffn = keras.layers.Dense(x.shape[-1])(ffn)
-    out2 = keras.layers.LayerNormalization(epsilon=1e-6)(out1 + ffn)
-    return out2
-
-
 def build_model_v2(input_size=VECTOR_SIZE):
     inputs = keras.Input(shape=(input_size,), name="state_vector")
 
@@ -41,12 +27,13 @@ def build_model_v2(input_size=VECTOR_SIZE):
     x = keras.layers.BatchNormalization()(x)
     x = keras.layers.Dropout(0.1)(x)
 
-    x = keras.layers.Reshape((1, 128))(x)
+    x = keras.layers.Dense(128, activation="relu")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Dropout(0.15)(x)
 
-    x = transformer_block(x, head_size=32, num_heads=4, ff_dim=128)
-    x = transformer_block(x, head_size=32, num_heads=4, ff_dim=128)
-
-    x = keras.layers.Flatten()(x)
+    x = keras.layers.Dense(128, activation="relu")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Dropout(0.15)(x)
 
     x = keras.layers.Dense(64, activation="relu")(x)
     x = keras.layers.BatchNormalization()(x)
@@ -107,8 +94,7 @@ class AgentBrainV2:
         self.model = build_model_v2()
         self._compiled = False
 
-        if not training:
-            self._load_weights()
+        self._load_weights()
 
     def predict(self, state_vec):
         x = state_vec.reshape(1, -1)

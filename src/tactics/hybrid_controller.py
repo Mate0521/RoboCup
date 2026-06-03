@@ -30,6 +30,16 @@ class HybridController:
         if self._is_deterministic():
             return self.fsm.step(pressing=pressing)
 
+        # Let ML decide when ball is at feet (KICK_BALL)
+        if self._can_use_ml() and self.perception.is_ball_kickable():
+            old_state = self.fsm.state
+            self.fsm.state = State.KICK_BALL
+            cmd = self._decide_ml(pressing)
+            if cmd is not None:
+                self.fsm.state = State.PLAY_ON
+                return cmd
+            self.fsm.state = old_state
+
         if self._can_use_ml() and self.fsm.state in ML_ELIGIBLE_STATES:
             cmd = self._decide_ml(pressing)
             if cmd is not None:
@@ -53,16 +63,19 @@ class HybridController:
 
             if self.trainer:
                 score_diff = self._get_score_diff()
-                result = self.trainer.step(state_vec, score_diff)
-                action_idx, params = result[0], result[1]
+                action_idx, params, value, log_prob = self.brain.predict_with_log_prob(state_vec)
+
+                cmd = self.brain.action_to_command(action_idx, params, self.side)
+                if cmd is not None and self._is_action_safe(action_idx, params):
+                    self.trainer.store_experience(state_vec, score_diff, action_idx, params, value, log_prob)
+                    return cmd
             elif self.brain:
                 action_idx, params, _ = self.brain.predict(state_vec)
-            else:
-                return None
 
-            cmd = self.brain.action_to_command(action_idx, params, self.side)
-            if cmd is not None and self._is_action_safe(action_idx, params):
-                return cmd
+                cmd = self.brain.action_to_command(action_idx, params, self.side)
+                if cmd is not None and self._is_action_safe(action_idx, params):
+                    return cmd
+
         except Exception as e:
             logger.warning(f"[{self.unum}] ML fallo: {e}")
 

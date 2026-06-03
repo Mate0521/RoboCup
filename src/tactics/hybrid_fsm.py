@@ -5,7 +5,7 @@ from enum import Enum
 from modules import actuators
 from modules.perception import PlayMode
 from modules.role_assignment import get_tactical_position, clamp_to_zone
-from util.field_constants import GOAL_L_X, GOAL_R_X, KICKABLE_MARGIN
+from util.field_constants import GOAL_L_X, GOAL_R_X, GOAL_WIDTH, KICKABLE_MARGIN
 from coordination.blackboard import Blackboard
 
 logger = logging.getLogger(__name__)
@@ -164,6 +164,12 @@ class HybridFSM:
     def _handle_kick_ball(self):
         self._transition_to(State.KICK_BALL)
         state = self.perception.state
+        sx, sy = state.self_x, state.self_y
+
+        if sx is not None:
+            shot = self._shoot_on_goal(sx, sy)
+            if shot is not None:
+                return shot
 
         from tactics.pass_evaluation import PassEvaluator
         bb = Blackboard()
@@ -175,7 +181,6 @@ class HybridFSM:
         if not teammates:
             teammates = []
 
-        sx, sy = state.self_x, state.self_y
         if sx is not None and opponents:
             evaluator = PassEvaluator()
             best_pass = evaluator.evaluate(
@@ -196,6 +201,26 @@ class HybridFSM:
 
         return self._pass_to_teammate()
 
+    def _shoot_on_goal(self, sx, sy):
+        goal_x = GOAL_R_X if self.side == "l" else GOAL_L_X
+        goal_y = 0.0
+        dx = goal_x - sx
+        dy = goal_y - sy
+        dist = math.hypot(dx, dy)
+
+        if dist > 30:
+            return None
+
+        angle = math.degrees(math.atan2(dy, dx))
+        target_angle = angle - self.perception.state.body_direction
+        while target_angle > 180: target_angle -= 360
+        while target_angle < -180: target_angle += 360
+
+        power = min(80, max(20, dist * 2.0))
+        logger.info(f"[{self.unum}] TIRO A PORTERÍA ⚽ d={dist:.0f}m p={power:.0f}")
+        self._transition_to(State.SUPPORT)
+        return actuators.kick(power, target_angle)
+
     def _handle_chase(self):
         self._transition_to(State.CHASE_BALL)
         state = self.perception.state
@@ -205,12 +230,24 @@ class HybridFSM:
         if ba is None:
             return self._search_ball()
 
-        if abs(ba) > 6:
-            turn = max(-15, min(15, ba * 0.4))
+        if abs(ba) > 8:
+            turn = max(-20, min(20, ba * 0.35))
             return actuators.turn(turn)
 
-        if bd is not None and bd < 3:
-            return actuators.dash(40)
+        if bd is None:
+            return actuators.dash(DASH_POWER)
+
+        if bd < 0.7:
+            return actuators.turn(1)
+
+        if bd < 1.5:
+            return actuators.dash(8)
+
+        if bd < 3.0:
+            return actuators.dash(20)
+
+        if bd < 6.0:
+            return actuators.dash(45)
 
         return actuators.dash(DASH_POWER)
 
@@ -366,9 +403,14 @@ class HybridFSM:
 
     def _dribble_forward(self):
         self._transition_to(State.DRIBBLE)
+        state = self.perception.state
+        sx, sy = state.self_x, state.self_y
+        if sx is not None:
+            shot = self._shoot_on_goal(sx, sy)
+            if shot is not None:
+                return shot
         fwd = 0 if self.side == "l" else 180
-        logger.info(f"[{self.unum}] DRIBBLE hacia adelante")
-        return actuators.kick(15, fwd)
+        return actuators.kick(5, fwd)
 
     def _pass_or_clear(self):
         state = self.perception.state
@@ -428,11 +470,11 @@ class HybridFSM:
         while diff > 180: diff -= 360
         while diff < -180: diff += 360
 
-        if abs(diff) > 8:
-            turn = max(-15, min(15, diff))
+        if abs(diff) > 25:
+            turn = max(-20, min(20, diff * 0.4))
             return actuators.turn(turn)
 
-        power = max(15, min(70, dist * 2.5))
+        power = max(20, min(90, dist * 3.0))
         return actuators.dash(power)
 
     def _role_radius(self):

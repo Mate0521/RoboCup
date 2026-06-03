@@ -1,17 +1,10 @@
 services:
 
-  team_left:
+  origen:
     environment:
       - TRAINING=true
     volumes:
-      - ../ml/weights:/app/src/ml/weights
-      - ../training_logs:/app/src/training_logs
-    command: python src/main_training.py
-
-  team_right:
-    environment:
-      - TRAINING=true
-    volumes:
+      - ../src:/app/src
       - ../ml/weights:/app/src/ml/weights
       - ../training_logs:/app/src/training_logs
     command: python src/main_training.py

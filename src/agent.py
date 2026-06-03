@@ -119,6 +119,9 @@ class Agent:
             logger.error(f"[{self.unum}] Error: {e}")
             import traceback
             logger.error(traceback.format_exc())
+        finally:
+            if self._trainer:
+                self._trainer.end_episode()
 
     def _on_see(self, data):
         objs = []

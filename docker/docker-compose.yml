@@ -5,13 +5,15 @@ services:
     container_name: rcssserver
     networks:
       - robocup_net
-    command: ./rcssserver server::port=6000 server::auto_mode=true
+    restart: unless-stopped
+    command: sh -c "while true; do ./rcssserver server::port=6000 server::auto_mode=true; done"
 
-  team_left:
+  # Equipo local (nuestro codigo original con FSM + PPO)
+  origen:
     build:
       context: ..
       dockerfile: docker/agents/Dockerfile
-    container_name: team_left
+    container_name: origen
     environment:
       - SERVER_IP=rcssserver
       - SERVER_PORT=6000
@@ -22,20 +24,50 @@ services:
     networks:
       - robocup_net
 
+  # Oponente generico: clona un repo git publico y ejecuta start.sh
+  # Uso: docker compose --profile opponent up -d
+  # Para cambiar de oponente, actualiza GIT_REPO_URL y recrea: docker compose up -d --force-recreate team_right
   team_right:
     build:
       context: ..
-      dockerfile: docker/agents/Dockerfile
+      dockerfile: docker/agents/Dockerfile.generic
     container_name: team_right
     environment:
       - SERVER_IP=rcssserver
       - SERVER_PORT=6000
       - TEAM=right
       - NUM_AGENTS=11
+      - GIT_REPO_URL=https://github.com/jehr-ud/rcsoccersim-vortex.git
+      - GIT_BRANCH=main
     depends_on:
       - server
     networks:
       - robocup_net
+    profiles:
+      - opponent
+
+  # Segundo oponente generico (opcional): mismo comportamiento que team_right
+  # NOTA: Detener origen primero: docker compose stop origen
+  # Uso: docker compose --profile opponent2 up -d
+  team_left:
+    build:
+      context: ..
+      dockerfile: docker/agents/Dockerfile.generic
+    container_name: team_left
+    environment:
+      - SERVER_IP=rcssserver
+      - SERVER_PORT=6000
+      - TEAM=left
+      - NUM_AGENTS=11
+      - GIT_REPO_URL=https://github.com/usuario/otro-proyecto-oponente.git
+      - GIT_BRANCH=main
+    depends_on:
+      - server
+    networks:
+      - robocup_net
+    profiles:
+      - opponent2
+
   monitor:
     build: ./monitor
     container_name: rcssmonitor

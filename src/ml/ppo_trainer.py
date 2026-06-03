@@ -20,6 +20,8 @@ VALUE_COEF = 0.5
 MAX_GRAD_NORM = 0.5
 LEARNING_RATE = 3e-4
 
+_global_episode_accum = deque(maxlen=100)
+
 
 class TrajectoryBuffer:
     def __init__(self, max_size=TRAJECTORY_LENGTH):
@@ -79,14 +81,13 @@ class PPOTrainer:
         self._prev_log_prob = None
 
         self._episode_reward = 0.0
-        self._episode_accum = []
         self._best_ep_reward = -1e9
 
         if not brain._compiled:
             compile_model_v2(brain.model, LEARNING_RATE)
             brain._compiled = True
 
-    def step(self, state_vec, score_diff, done=False):
+    def store_experience(self, state_vec, score_diff, action_idx, params, value, log_prob, done=False):
         reward = self.reward_calc.calculate(score_diff)
         self._episode_reward += reward
 
@@ -101,14 +102,11 @@ class PPOTrainer:
                 done=done,
             )
 
-        action_idx, params, value, log_prob = self.brain.predict_with_log_prob(state_vec)
-
         self._prev_state = state_vec.copy()
         self._prev_action = action_idx
         self._prev_params = params.copy()
         self._prev_value = value
         self._prev_log_prob = log_prob
-
         self._cycle += 1
 
         if self._cycle % TRAIN_EVERY == 0 and len(self.trajectory) >= MINIBATCH_SIZE:
@@ -116,7 +114,7 @@ class PPOTrainer:
 
         if self._cycle % SAVE_EVERY == 0:
             self.brain.save_weights()
-            avg_reward = np.mean(self._episode_accum[-20:]) if self._episode_accum else 0.0
+            avg_reward = np.mean(_global_episode_accum[-20:]) if _global_episode_accum else 0.0
             logger.info(
                 f"[PPOTrainer] ciclo={self._cycle} | "
                 f"buffer={len(self.trajectory)} | "
@@ -124,15 +122,11 @@ class PPOTrainer:
                 f"avg20={avg_reward:.1f}"
             )
 
-        return action_idx, params, value, log_prob
-
     def end_episode(self):
         if self._prev_state is not None and len(self.trajectory) > 0:
             self.trajectory.dones[-1] = True
 
-        self._episode_accum.append(self._episode_reward)
-        if len(self._episode_accum) > 100:
-            self._episode_accum.pop(0)
+        _global_episode_accum.append(self._episode_reward)
 
         if self._episode_reward > self._best_ep_reward:
             self._best_ep_reward = self._episode_reward
