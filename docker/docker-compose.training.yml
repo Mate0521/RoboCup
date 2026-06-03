@@ -8,3 +8,20 @@ services:
       - ../ml/weights:/app/src/ml/weights
       - ../training_logs:/app/src/training_logs
     command: python src/main_training.py
+
+  opponent:
+    build:
+      context: ..
+      dockerfile: docker/agents/Dockerfile.generic
+    container_name: opponent
+    environment:
+      - SERVER_IP=rcssserver
+      - SERVER_PORT=6000
+      - TEAM=right
+      - NUM_AGENTS=11
+      - GIT_REPO_URL=https://github.com/jehr-ud/rcsoccersim-vortex.git
+      - GIT_BRANCH=main
+    depends_on:
+      - server
+    networks:
+      - robocup_net
