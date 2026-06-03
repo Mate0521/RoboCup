@@ -118,10 +118,13 @@ class HybridFSM:
         chase_radii = {"goalkeeper": 8, "defender": 12, "midfielder": 18, "forward": 22}
         chase_radius = chase_radii.get(self.role, 15) * (1.6 if pressing else 1.0)
 
-        if bd is not None and bd < chase_radius:
-            return self._handle_chase()
-
         bb = Blackboard()
+
+        if bd is not None and bd < chase_radius:
+            if bb.am_i_nearest_to_ball(self.unum):
+                return self._handle_chase()
+            else:
+                return self._handle_support()
         ball_owner = bb.get_ball_owner()
         ball_pos = bb.ball.get("pos")
 
