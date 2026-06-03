@@ -30,15 +30,8 @@ class HybridController:
         if self._is_deterministic():
             return self.fsm.step(pressing=pressing)
 
-        # Let ML decide when ball is at feet (KICK_BALL)
-        if self._can_use_ml() and self.perception.is_ball_kickable():
-            old_state = self.fsm.state
-            self.fsm.state = State.KICK_BALL
-            cmd = self._decide_ml(pressing)
-            if cmd is not None:
-                self.fsm.state = State.PLAY_ON
-                return cmd
-            self.fsm.state = old_state
+        if self.perception.is_ball_kickable():
+            return self.fsm.step(pressing=pressing)
 
         if self._can_use_ml() and self.fsm.state in ML_ELIGIBLE_STATES:
             cmd = self._decide_ml(pressing)
