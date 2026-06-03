@@ -121,7 +121,7 @@ class HybridFSM:
         bb = Blackboard()
 
         if bd is not None and bd < chase_radius:
-            if bb.am_i_nearest_to_ball(self.unum):
+            if self._is_ball_in_my_zone() or bb.am_i_nearest_to_ball(self.unum):
                 return self._handle_chase()
             else:
                 return self._handle_support()
@@ -268,7 +268,7 @@ class HybridFSM:
         if sx is None:
             return self._search_ball()
 
-        support_spread = {"defender": 18, "midfielder": 14, "forward": 10, "goalkeeper": 25}
+        support_spread = {"defender": 15, "midfielder": 10, "forward": 7, "goalkeeper": 25}
         spread = support_spread.get(self.role, 14)
         role_angle_offset = {"defender": 0, "midfielder": 30, "forward": 60}
         base_angle = role_angle_offset.get(self.role, 30)
@@ -479,6 +479,24 @@ class HybridFSM:
 
         power = max(20, min(90, dist * 3.0))
         return actuators.dash(power)
+
+    def _is_ball_in_my_zone(self):
+        """Determina si el balón está en mi zona de responsabilidad."""
+        bb = Blackboard()
+        ball_pos = bb.ball.get("pos")
+        if not ball_pos or ball_pos[0] is None:
+            return False
+        
+        from modules.role_assignment import get_strict_zone
+        xmin, xmax, ymin, ymax = get_strict_zone(self.unum, self.side)
+        
+        margin = 12
+        xmin -= margin
+        xmax += margin
+        ymin -= margin
+        ymax += margin
+        
+        return (xmin <= ball_pos[0] <= xmax and ymin <= ball_pos[1] <= ymax)
 
     def _role_radius(self):
         return {"goalkeeper": 15, "defender": 18, "midfielder": 28, "forward": 40}.get(self.role, 22)
