@@ -121,9 +121,27 @@ class HybridFSM:
         bb = Blackboard()
 
         if bd is not None and bd < chase_radius:
-            if bb.am_i_nearest_to_ball(self.unum):
+            am_nearest = bb.am_i_nearest_to_ball(self.unum)
+            
+            num_agents_closer = 0
+            for other_unum, data in bb.agent_positions.items():
+                if other_unum == self.unum:
+                    continue
+                opos = data.get("pos")
+                if not opos or opos[0] is None:
+                    continue
+                ball_pos = bb.ball.get("pos")
+                if not ball_pos or ball_pos[0] is None:
+                    continue
+                other_bd = math.hypot(opos[0] - ball_pos[0], opos[1] - ball_pos[1])
+                if other_bd < bd - 1.5:
+                    num_agents_closer += 1
+            
+            if am_nearest or num_agents_closer == 0 or bd < 4:
+                logger.debug(f"[{self.unum}] → CHASE bd={bd:.1f} nearest={am_nearest} closer={num_agents_closer}")
                 return self._handle_chase()
             else:
+                logger.debug(f"[{self.unum}] → SUPPORT bd={bd:.1f} closer={num_agents_closer}")
                 return self._handle_support()
         ball_owner = bb.get_ball_owner()
         ball_pos = bb.ball.get("pos")
@@ -231,13 +249,16 @@ class HybridFSM:
         bd = state.ball_distance
 
         if ba is None:
+            logger.debug(f"[{self.unum}] Chase: ba=None, buscando")
             return self._search_ball()
 
         if abs(ba) > 8:
             turn = max(-20, min(20, ba * 0.35))
+            logger.debug(f"[{self.unum}] Chase: girando ba={ba:.1f}")
             return actuators.turn(turn)
 
         if bd is None:
+            logger.debug(f"[{self.unum}] Chase: bd=None, dash full")
             return actuators.dash(DASH_POWER)
 
         teammates_near = 0
@@ -247,20 +268,27 @@ class HybridFSM:
                 teammates_near += 1
         
         if teammates_near >= 2 and bd < 3.0:
-            return actuators.dash(max(5, bd * 2))
+            power = max(5, bd * 2)
+            logger.debug(f"[{self.unum}] Chase: freno (team={teammates_near}) dash={power:.1f}")
+            return actuators.dash(power)
 
         if bd < 0.7:
+            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} muy cerca, dash(6)")
             return actuators.dash(6)
 
         if bd < 1.5:
+            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(8)")
             return actuators.dash(8)
 
         if bd < 3.0:
+            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(20)")
             return actuators.dash(20)
 
         if bd < 6.0:
+            logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(45)")
             return actuators.dash(45)
 
+        logger.debug(f"[{self.unum}] Chase: bd={bd:.2f} dash(75)")
         return actuators.dash(DASH_POWER)
 
     def _handle_support(self):
@@ -465,18 +493,25 @@ class HybridFSM:
         state = self.perception.state
         if self.perception.is_ball_kickable():
             fwd = 0 if self.side == "l" else 180
+            logger.info(f"[{self.unum}] ⚽ KICK-OFF ejecutado")
             return actuators.kick(50, fwd)
+        
         bd = state.ball_distance
         ba = state.ball_angle
         
-        bb = Blackboard()
         if bd is not None and bd < 15:
-            if not bb.am_i_nearest_to_ball(self.unum):
-                return self._go_dead_position()
+            if self.unum == 10:
+                logger.info(f"[{self.unum}] Executor principal → bd={bd:.1f}")
+                if abs(ba or 0) > 8:
+                    return actuators.turn((ba or 0) * 0.4)
+                return actuators.dash(50)
             
-            if abs(ba or 0) > 8:
-                return actuators.turn((ba or 0) * 0.4)
-            return actuators.dash(40)
+            if bd < 8:
+                logger.info(f"[{self.unum}] Executor cercano → bd={bd:.1f}")
+                if abs(ba or 0) > 8:
+                    return actuators.turn((ba or 0) * 0.4)
+                return actuators.dash(35)
+        
         return self._go_dead_position()
 
     def _search_ball(self):

@@ -157,11 +157,13 @@ class Blackboard:
         with self._data_lock:
             bx, by = self.ball["pos"]
             if bx is None:
-                return True
+                return False
             my_pos = self.agent_positions.get(unum, {}).get("pos")
             if not my_pos or my_pos[0] is None:
-                return True
+                return False
+            
             my_dist = math.hypot(my_pos[0] - bx, my_pos[1] - by)
+            
             for other_unum, data in self.agent_positions.items():
                 if other_unum == unum:
                     continue
@@ -169,10 +171,11 @@ class Blackboard:
                 if opx is None:
                     continue
                 other_dist = math.hypot(opx - bx, opy - by)
-                if other_dist < my_dist - 0.5:
+                if other_dist < my_dist - 1.5:
                     return False
-                if abs(other_dist - my_dist) < 0.5 and other_unum < unum:
+                if abs(other_dist - my_dist) < 1.5 and other_unum < unum:
                     return False
+            
             return True
 
     def get_nearest_opponent_to_ball(self):
