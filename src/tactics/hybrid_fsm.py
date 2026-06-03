@@ -268,6 +268,22 @@ class HybridFSM:
         if sx is None:
             return self._search_ball()
 
+        if self.role == "forward":
+            goal_x = GOAL_R_X if self.side == "l" else GOAL_L_X
+            in_attack = (self.side == "l" and ball_pos[0] > 10) or (self.side == "r" and ball_pos[0] < -10)
+            if in_attack:
+                tx = ball_pos[0] + (goal_x - ball_pos[0]) * 0.5
+                ty = ball_pos[1] * 0.4 + (10 if self.unum % 2 == 0 else -10)
+                return self._navigate(tx, ty)
+        
+        if self.role == "midfielder":
+            in_attack = (self.side == "l" and ball_pos[0] > 0) or (self.side == "r" and ball_pos[0] < 0)
+            if in_attack:
+                lateral_offset = 12 if self.unum % 2 == 0 else -12
+                tx = ball_pos[0] + 8
+                ty = ball_pos[1] + lateral_offset
+                return self._navigate(tx, ty)
+
         support_spread = {"defender": 15, "midfielder": 10, "forward": 7, "goalkeeper": 25}
         spread = support_spread.get(self.role, 14)
         role_angle_offset = {"defender": 0, "midfielder": 30, "forward": 60}
@@ -380,26 +396,32 @@ class HybridFSM:
         for t in state.teammates:
             td = t.get("distance", 99)
             ta = t.get("angle", 0)
-            if td < 2 or td > 35:
+            if td < 3 or td > 35:
                 continue
-            team.append((td, ta, 0.0))
+            forward_bias = 1.0
+            if self.side == "l" and -45 <= ta <= 45:
+                forward_bias = 0.7
+            elif self.side == "r" and (ta <= -135 or ta >= 135):
+                forward_bias = 0.7
+            team.append((td * forward_bias, ta, td))
 
         if team:
             team.sort(key=lambda x: x[0])
-            for td, ta, _ in team:
+            for _, ta, td in team:
                 risk = 0
                 for o in state.opponents:
                     od = o.get("distance", 99)
-                    if abs(od - td) < 3 and abs(o.get("angle", 0) - ta) < 20:
+                    if abs(od - td) < 4 and abs(o.get("angle", 0) - ta) < 25:
                         risk += 1
-                if risk < 2:
-                    power = min(50, max(15, td * 3))
+                if risk < 3:
+                    power = min(55, max(15, td * 3))
                     logger.info(f"[{self.unum}] PASE a {td:.0f}m ⦣{ta:.0f}° riesgo={risk}")
                     return actuators.kick(power, ta)
 
-        for td, ta, _ in team[:3]:
-            power = min(40, max(10, td * 2.5))
-            logger.info(f"[{self.unum}] PASE ({td:.0f}m)")
+        if team:
+            _, ta, td = team[0]
+            power = min(50, max(12, td * 2.8))
+            logger.info(f"[{self.unum}] PASE forzado {td:.0f}m")
             return actuators.kick(power, ta)
 
         return self._dribble_forward()

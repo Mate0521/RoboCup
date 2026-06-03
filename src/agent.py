@@ -50,6 +50,7 @@ class Agent:
         self._had_ball_last = False
         self._cycles_in_before_kickoff = 0
         self._episode_ended = False
+        self._episode_start_time = None
 
     def connect(self):
         logger.info(f"[{self.unum}] Conectando...")
@@ -196,6 +197,13 @@ class Agent:
         if self._episode_ended and self._trainer:
             self._trainer.end_episode()
             self._episode_ended = False
+            self._episode_start_time = None
+
+        if self._trainer and self._episode_start_time is not None:
+            if s.time - self._episode_start_time > 1500:
+                logger.info(f"[{unum}] Episode timeout ({s.time - self._episode_start_time} ciclos)")
+                self._trainer.end_episode()
+                self._episode_start_time = s.time
 
         pressing = 1 <= self._lost_ball_count <= 20
 
@@ -213,6 +221,7 @@ class Agent:
             return actuators.turn(2)
 
         if self._controller is None:
+            self._episode_start_time = s.time
             self._init_ml(unum)
             fsm = HybridFSM(self.perception, self._role, unum, self._side)
             from tactics.hybrid_controller import HybridController
